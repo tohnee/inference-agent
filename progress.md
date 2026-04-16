@@ -1,0 +1,140 @@
+# Progress
+
+## Session Log
+
+### 2026-04-16
+
+- Started a new planning cycle for building LLM inference optimization skills at the repository root.
+- Confirmed the current repository already contains:
+  - `e2e-inference-opt-skill` for system-level optimization knowledge
+  - `auto-profiling` for runtime-driven experiment execution
+- Collected external reference patterns from FlashInfer and SGLang:
+  - FlashInfer skill pattern: debug CUDA crash, benchmark kernel, add CUDA kernel
+  - SGLang practice pattern: benchmark, profile analysis, deployment cookbook, remote validation, CUDA crash triage
+- Captured a live environment mismatch:
+  - the `planning-with-files` catchup script path under `~/.claude` was not present in this environment
+  - continued by creating fresh planning files manually in the project root
+- Chosen implementation direction:
+  - create a dedicated LLM serving skill package
+  - keep it complementary to `e2e-inference-opt-skill`
+  - keep runtime integration points aimed at `auto-profiling`
+- Added RED validation in `tests/test_skill_catalog.py` for:
+  - existence of `llm-serving-opt-skill/SKILL.md`
+  - existence of eight reference documents
+  - presence of key LLM-serving terms including `SGLang`, `FlashInfer`, `TTFT`, and `KV cache`
+- Verified RED by running `python3 -m unittest tests/test_skill_catalog.py` and observing expected failures before implementation.
+- Implemented `llm-serving-opt-skill/` with:
+  - one routing `SKILL.md`
+  - `01_serving_baseline.md`
+  - `02_benchmark_workflows.md`
+  - `03_profile_analysis.md`
+  - `04_cuda_crash_triage.md`
+  - `05_kernel_backend_playbook.md`
+  - `06_kv_cache_scheduler.md`
+  - `07_deployment_cookbook.md`
+  - `08_agentic_optimization.md`
+- Incorporated upstream operational patterns from FlashInfer and SGLang into directly reusable skill workflows and command recipes.
+- Hit a shell parsing failure when trying to generate all files in one oversized script, then switched to one-file-at-a-time patches.
+- Verified GREEN with:
+  - `python3 -m unittest tests/test_skill_catalog.py`
+  - `python3 -m unittest discover -s tests`
+  - diagnostics check showing no issues
+- Started the next expansion cycle to move from one LLM serving skill to a multi-skill system.
+- Added a dedicated implementation plan at `docs/plans/2026-04-16-llm-multi-skill-expansion.md`.
+- Expanded RED validation so the test suite now checks:
+  - eleven focused sub-skill directories
+  - router mentions for selected sub-skills
+  - cross-framework terms including `vLLM`, `TensorRT-LLM`, `Triton`, and `PyTorch`
+- Verified RED again by running `python3 -m unittest tests/test_skill_catalog.py` and observing missing-sub-skill failures.
+- Updated the router skill to expose a new multi-skill route table.
+- Added the following skill packages:
+  - `sglang-benchmark-skill`
+  - `serving-benchmark-skill`
+  - `cuda-crash-debug-skill`
+  - `profile-triage-skill`
+  - `backend-selection-skill`
+  - `kv-cache-prefix-cache-skill`
+  - `scheduler-batching-skill`
+  - `serving-correctness-skill`
+  - `serving-deployment-skill`
+  - `remote-gpu-validation-skill`
+  - `custom-kernel-workflow-skill`
+- Refreshed the research basis to include more explicit vLLM and TensorRT-LLM engineering practices around prefix caching, profiling, disaggregated serving, and benchmarking hygiene.
+- Verified GREEN for the multi-skill expansion with:
+  - `python3 -m unittest tests/test_skill_catalog.py`
+  - `python3 -m unittest discover -s tests`
+  - diagnostics check showing no issues
+- Started a consolidation pass to move all LLM-serving skills under `llm-serving-opt-skill`.
+- Asked for migration policy and received a clear preference for full migration with no top-level compatibility shells.
+- Updated RED validation again so tests now require:
+  - sub-skills to live under `llm-serving-opt-skill/skills/`
+  - top-level old sub-skill directories to be absent
+  - the router to mention `llm-serving-opt-skill/skills`
+- Verified RED by running `python3 -m unittest tests/test_skill_catalog.py` before migration.
+- Physically moved the eleven sub-skills into `llm-serving-opt-skill/skills/`.
+- Added `llm-serving-opt-skill/skills/README.md` as a nested sub-skill index.
+- Updated the router links in `llm-serving-opt-skill/SKILL.md` to use the nested path.
+- Performed a content-strengthening pass on every moved sub-skill by adding more explicit inputs, evidence requirements, tuning order, or escalation guidance.
+- Hit another zsh here-doc parsing failure while trying to batch-update files inline, then recovered by writing a temporary Python script file, running it, and deleting it.
+- Verified GREEN for the consolidation and content pass with:
+  - `python3 -m unittest tests/test_skill_catalog.py`
+  - `python3 -m unittest discover -s tests`
+  - diagnostics check showing no issues
+- Started a new integration pass driven by the `cuda-optimized-skill` article and upstream repository.
+- Fetched and read the full article, extracting the key loop:
+  - preflight
+  - correctness
+  - benchmark
+  - targeted/full NCU
+  - optimization proposal
+  - strategy memory
+  - best-version selection
+- Confirmed the upstream repository contains reusable source code and is MIT licensed.
+- Attempted `git clone` first and hit a timeout, then switched to downloading the repository zip from GitHub codeload and unpacking it locally.
+- Inspected the upstream `skills/optimized-skill/` subtree and identified the directly reusable modules:
+  - `kernel-benchmark`
+  - `ncu-rep-analyze`
+  - `operator-optimize-loop`
+  - `reference`
+- Expanded RED validation again so the test suite now requires a nested `cuda-optimized-skill` package with:
+  - `SKILL.md`
+  - `README.md`
+  - `LICENSE`
+  - vendored scripts
+  - strategy-memory seed file
+  - CUDA/CUTLASS/Triton references
+- Verified RED by running `python3 -m unittest tests/test_skill_catalog.py` before integration and observing the expected failures.
+- Copied the upstream source tree into `cuda-kernel-opt-skill/skills/cuda-optimized-skill/`.
+- Added a local root `SKILL.md` for the vendored toolkit and updated the top-level LLM router plus nested skills index to mention it.
+- Rewrote hard-coded upstream paths inside vendored docs and scripts to local project paths under `cuda-kernel-opt-skill/skills/cuda-optimized-skill/`.
+- Verified GREEN with:
+  - `python3 -m unittest tests/test_skill_catalog.py`
+  - `python3 -m unittest discover -s tests`
+  - `python3 -m py_compile cuda-kernel-opt-skill/skills/cuda-optimized-skill/kernel-benchmark/scripts/benchmark.py cuda-kernel-opt-skill/skills/cuda-optimized-skill/operator-optimize-loop/scripts/optimize_loop.py`
+  - diagnostics check showing no issues
+- Started a three-module restructuring pass based on the new direction:
+  - `e2e-inference-opt-skill`
+  - `llm-serving-opt-skill`
+  - `cuda-kernel-opt-skill`
+- Added a dedicated implementation plan at `docs/plans/2026-04-16-three-module-restructure.md`.
+- Expanded RED validation again so the test suite now requires:
+  - `e2e-inference-opt-skill`
+  - `llm-serving-opt-skill`
+  - `cuda-kernel-opt-skill`
+  - scenario aim templates in `auto-profiling`
+  - removal of the old `inference-opt-skill` directory
+- Verified RED by running `python3 -m unittest tests/test_skill_catalog.py` before the restructure.
+- Renamed `inference-opt-skill` to `e2e-inference-opt-skill`.
+- Extracted CUDA-related skills from `llm-serving-opt-skill/skills/` into the new sibling module `cuda-kernel-opt-skill/skills/`.
+- Added a new top-level router at `cuda-kernel-opt-skill/SKILL.md` and a nested `skills/README.md`.
+- Narrowed the LLM-serving root so it now routes only service-level skills and escalates kernel/operator work to `cuda-kernel-opt-skill`.
+- Added three scenario-specific auto-profiling aim templates:
+  - `aim.e2e.md`
+  - `aim.llm-serving.md`
+  - `aim.cuda-kernel.md`
+- Updated `auto-profiling/SKILL.md`, `README.md`, `README.zh-CN.md`, `aim.md`, and `aim.zh-CN.md` so `auto-profiling` is documented as the common entrypoint for the three scenarios.
+- Verified GREEN after the restructure with:
+  - `python3 -m unittest tests/test_skill_catalog.py`
+  - `python3 -m unittest discover -s tests`
+  - `python3 -m py_compile tests/test_skill_catalog.py`
+  - diagnostics check showing no issues

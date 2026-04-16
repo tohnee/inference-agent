@@ -1,0 +1,15 @@
+[project]
+name = "auto-profiling"
+version = "0.1.0"
+description = "Minimal runtime for aim.md-driven autonomous inference profiling"
+requires-python = ">=3.10"
+
+[project.scripts]
+auto-profiling = "runner:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+package = true

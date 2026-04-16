@@ -1,0 +1,8 @@
+{
+  "status": "initialized",
+  "iterations_completed": 0,
+  "consecutive_failures": 0,
+  "last_experiment": null,
+  "best_experiment": null,
+  "next_action": "run baseline"
+}

@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "auto-profiling experiment log entry",
+  "type": "object",
+  "required": [
+    "experiment_id",
+    "phase",
+    "timestamp",
+    "metrics",
+    "exactness",
+    "decision"
+  ],
+  "properties": {
+    "experiment_id": {
+      "type": "string"
+    },
+    "phase": {
+      "type": "string",
+      "enum": [
+        "init",
+        "baseline",
+        "candidate"
+      ]
+    },
+    "timestamp": {
+      "type": "string"
+    },
+    "git_revision": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": {
+        "type": [
+          "number",
+          "integer",
+          "string",
+          "boolean"
+        ]
+      }
+    },
+    "exactness": {
+      "type": "object",
+      "properties": {
+        "passed": {
+          "type": "boolean"
+        },
+        "mismatch_count": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "passed"
+      ],
+      "additionalProperties": true
+    },
+    "decision": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "properties": {
+        "metric_name": {
+          "type": "string"
+        },
+        "metric_direction": {
+          "type": "string"
+        },
+        "baseline_value": {
+          "type": "number"
+        },
+        "candidate_value": {
+          "type": "number"
+        },
+        "improvement": {
+          "type": "number"
+        },
+        "relative_improvement": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "keep": {
+          "type": "boolean"
+        },
+        "rejection_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}
