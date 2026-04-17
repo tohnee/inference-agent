@@ -1,0 +1,17 @@
+# macOS
+.DS_Store
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Archives
+*.zip
+
+# Generated runtime state
+.auto-profiling/
+**/.auto-profiling/
+
+# Keep the source template shipped with auto-profiling
+!auto-profiling/.auto-profiling/
+!auto-profiling/.auto-profiling/**
