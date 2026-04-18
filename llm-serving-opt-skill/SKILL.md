@@ -111,6 +111,7 @@ Use this skill when any of the following is true:
 6. optimize KV cache and the scheduler -> [06_kv_cache_scheduler.md](references/06_kv_cache_scheduler.md)
 7. package and deploy cleanly -> [07_deployment_cookbook.md](references/07_deployment_cookbook.md)
 8. convert findings into guarded automation -> [08_agentic_optimization.md](references/08_agentic_optimization.md)
+9. scale and harden distributed AI-infra -> [09_distributed_ai_infra.md](references/09_distributed_ai_infra.md)
 
 ## Multi-Skill Route
 
@@ -147,6 +148,7 @@ Escalate to `cuda-kernel-opt-skill` after serving evidence shows the real bottle
 | reduce KV cache pressure or scheduler stalls | [06_kv_cache_scheduler.md](references/06_kv_cache_scheduler.md) |
 | launch or harden SGLang-style deployment | [07_deployment_cookbook.md](references/07_deployment_cookbook.md) |
 | turn manual iteration into bounded automation | [08_agentic_optimization.md](references/08_agentic_optimization.md) |
+| optimize distributed serving and AI-infra paths | [09_distributed_ai_infra.md](references/09_distributed_ai_infra.md) |
 
 ## Standard Working Contract
 

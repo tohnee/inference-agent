@@ -14,4 +14,5 @@ Use [SKILL.md](file:///Users/tc/Downloads/推理优化skills/cuda-kernel-opt-ski
 - `serving-correctness-skill`
 - `remote-gpu-validation-skill`
 - `custom-kernel-workflow-skill`
+- `operator-backend-synthesis-skill`
 - `cuda-optimized-skill`

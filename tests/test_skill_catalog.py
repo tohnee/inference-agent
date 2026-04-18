@@ -22,6 +22,7 @@ CUDA_SUBSKILLS = [
     "serving-correctness-skill",
     "remote-gpu-validation-skill",
     "custom-kernel-workflow-skill",
+    "operator-backend-synthesis-skill",
     "cuda-optimized-skill",
 ]
 
@@ -46,6 +47,7 @@ class LlmServingSkillCatalogTests(unittest.TestCase):
             "06_kv_cache_scheduler.md",
             "07_deployment_cookbook.md",
             "08_agentic_optimization.md",
+            "09_distributed_ai_infra.md",
         ]
         for name in expected:
             self.assertTrue((LLM_ROOT / "references" / name).exists(), name)
@@ -60,6 +62,7 @@ class LlmServingSkillCatalogTests(unittest.TestCase):
             "06_parallelism.md",
             "07_pipeline_cache.md",
             "08_deployment.md",
+            "09_model_family_coverage.md",
         ]
         for name in expected:
             self.assertTrue((E2E_ROOT / "references" / name).exists(), name)
