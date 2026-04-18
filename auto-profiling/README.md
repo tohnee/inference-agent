@@ -22,6 +22,7 @@ The default philosophy is:
 
 - `runner.py`: executes the `aim.md` contract
 - `scorer.py`: compares reference and candidate results
+- `bootstrap_aim.py`: generates scenario/profile-specific `aim` templates for broad E2E model families and LLM serving backends
 - `pyproject.toml`: enables `uv` execution
 - `log_schema.json`: structured log schema
 
@@ -54,6 +55,7 @@ The runtime creates and updates `.auto-profiling/` in the target repository:
 - `current_contract.md`
 - `evaluator_report.md`
 - `next_handoff.md`
+- `skill_route_plan.md`
 - `task_plan.md`
 - `findings.md`
 - `progress.md`
@@ -432,3 +434,15 @@ If you continue evolving this project, the most natural next steps are:
 - automatic contract generation from profiler evidence
 - richer evaluator rubric
 - lane-specific helpers that directly import the logic of the three scenario modules
+### One-click Autopilot Iteration
+
+```bash
+uv run runner.py autopilot --aim aim.llm-serving.md --iterations 3 --label-prefix auto
+```
+
+Autopilot behavior:
+
+- auto-initialize baseline if missing
+- run bounded candidate iterations continuously
+- keep or reject each candidate by exactness + metric decision
+- refresh `next_handoff.md` and `skill_route_plan.md` for the next Codex/agent session

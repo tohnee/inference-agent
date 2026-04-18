@@ -29,6 +29,7 @@ Use it for:
 - CV, NLP, ranking, retrieval, rerank, tabular, classical ML, and mixed multi-stage inference paths
 - preprocess -> infer -> postprocess -> store/serve style pipelines
 - CPU/GPU co-design and E2E latency decomposition
+- broad model families including diffusion, Transformer, SAM, ViT, and tree models
 
 Do not use it as the primary module for:
 
@@ -137,6 +138,7 @@ Go to [03_roofline.md](references/03_roofline.md).
 - batching, concurrency, process model, multi-GPU layout → [06_parallelism.md](references/06_parallelism.md)
 - stage overlap, async pipeline, two-level cache, decode serving path → [07_pipeline_cache.md](references/07_pipeline_cache.md)
 - export, engine build, serving stack, rollout → [08_deployment.md](references/08_deployment.md)
+- model-family-specific fast route → [09_model_family_coverage.md](references/09_model_family_coverage.md)
 
 ## Problem Routing Table
 
@@ -151,6 +153,7 @@ Go to [03_roofline.md](references/03_roofline.md).
 | need batching, concurrency, multi-process, or multi-GPU guidance | [06_parallelism.md](references/06_parallelism.md) |
 | need pipeline overlap or cache design | [07_pipeline_cache.md](references/07_pipeline_cache.md) |
 | need ONNX, TensorRT, Triton, or production rollout guidance | [08_deployment.md](references/08_deployment.md) |
+| need fast routing by model family | [09_model_family_coverage.md](references/09_model_family_coverage.md) |
 
 ## Symptom Routing Map
 
@@ -220,6 +223,7 @@ In exact-parity mode, prefer optimizations that preserve numerical behavior:
 - [06_parallelism.md](references/06_parallelism.md): batching, multi-process, multi-GPU, concurrency
 - [07_pipeline_cache.md](references/07_pipeline_cache.md): overlap, queueing, cache design, prefill/decode path
 - [08_deployment.md](references/08_deployment.md): ONNX, TensorRT, Triton, rollout checklist
+- [09_model_family_coverage.md](references/09_model_family_coverage.md): broad family-to-lane routing
 
 ## Expected Output Template
 
