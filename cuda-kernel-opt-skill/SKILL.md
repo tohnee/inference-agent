@@ -43,6 +43,7 @@ Use this module for:
 - [`serving-correctness-skill`](skills/serving-correctness-skill/SKILL.md)
 - [`remote-gpu-validation-skill`](skills/remote-gpu-validation-skill/SKILL.md)
 - [`custom-kernel-workflow-skill`](skills/custom-kernel-workflow-skill/SKILL.md)
+- [`operator-backend-synthesis-skill`](skills/operator-backend-synthesis-skill/SKILL.md)
 - [`cuda-optimized-skill`](skills/cuda-optimized-skill/SKILL.md)
 
 ## Auto-Profiling Link

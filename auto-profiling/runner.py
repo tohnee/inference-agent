@@ -40,6 +40,16 @@ SCENARIO_LANES = {
         ],
         "recommended_aim_template": "aim.cuda-kernel.md",
     },
+    "operator-kernel": {
+        "target_module": "cuda-kernel-opt-skill",
+        "recommended_skill_route": [
+            "auto-profiling",
+            "cuda-kernel-opt-skill",
+            "operator-backend-synthesis-skill",
+            "cuda-optimized-skill",
+        ],
+        "recommended_aim_template": "aim.cuda-kernel.md",
+    },
 }
 
 
@@ -280,6 +290,7 @@ def initialize_workspace(project_root: Path) -> dict[str, str]:
         "current_contract_md": state_dir / "current_contract.md",
         "evaluator_report_md": state_dir / "evaluator_report.md",
         "next_handoff_md": state_dir / "next_handoff.md",
+        "skill_route_plan_md": state_dir / "skill_route_plan.md",
     }
 
     template_dir = template_root()
@@ -302,6 +313,7 @@ def initialize_workspace(project_root: Path) -> dict[str, str]:
         "current_contract_md": "# Current Contract\n\n## Objective\n\n- fill from aim.md before each experiment\n",
         "evaluator_report_md": "# Evaluator Report\n\n## Latest Decision\n\n- no evaluation yet\n",
         "next_handoff_md": "# Next Handoff\n\n## Resume Here\n\n- initialize baseline and capture trusted metrics\n",
+        "skill_route_plan_md": "# Skill Route Plan\n\n## Current Scenario\n\n- not resolved yet\n",
     }
 
     for key, target in files.items():
@@ -357,6 +369,25 @@ def run_required(command: str, cwd: Path, prefix: str | None = None) -> dict[str
             f"command failed: {result['command']}\n{result['stderr'] or result['stdout']}"
         )
     return result
+
+
+def run_required_with_retry(
+    command: str,
+    cwd: Path,
+    prefix: str | None = None,
+    retry_count: int = 1,
+) -> dict[str, Any]:
+    attempts = max(1, retry_count)
+    last_error: RuntimeError | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return run_required(command, cwd=cwd, prefix=prefix)
+        except RuntimeError as exc:
+            last_error = exc
+            if attempt == attempts:
+                break
+    assert last_error is not None
+    raise last_error
 
 
 def append_jsonl(path: Path, payload: dict[str, Any]) -> None:
@@ -471,6 +502,39 @@ def resolve_install_command(aim: dict[str, Any], project_root: Path) -> str | No
     return auto_install_command(project_root)
 
 
+def command_retry_count_from_aim(aim: dict[str, Any]) -> int:
+    raw = aim.get("command_retry_count", 1)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return 1
+    return max(1, value)
+
+
+def write_skill_route_plan(workspace: dict[str, str], lane: dict[str, Any]) -> None:
+    lines = [
+        "# Skill Route Plan",
+        "",
+        "## Current Scenario",
+        "",
+        f"- scenario: {lane['scenario']}",
+        f"- target_module: {lane['target_module']}",
+        f"- recommended_skill_route: {lane['recommended_skill_route_text']}",
+        "",
+        "## Independent Skill Entry Points (for Codex/agent sessions)",
+        "",
+        "- e2e-inference: e2e-inference-opt-skill/SKILL.md",
+        "- llm-serving: llm-serving-opt-skill/SKILL.md",
+        "- cuda-kernel/operator: cuda-kernel-opt-skill/SKILL.md",
+        "",
+        "## Operator Synthesis Shortcut",
+        "",
+        "- python cuda-kernel-opt-skill/skills/cuda-optimized-skill/operator-optimize-loop/scripts/operator_backend_synth.py "
+        "--name=<op> --logic='<logic>' --op-type=matmul --backend=auto --output-dir=<dir>",
+    ]
+    Path(workspace["skill_route_plan_md"]).write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def run_contract(
     aim: dict[str, Any],
     project_root: Path,
@@ -480,6 +544,7 @@ def run_contract(
     prefix = aim.get("python_env_command") or None
     environment = detect_runtime_environment(project_root)
     lane = resolve_scenario_lane(aim)
+    retry_count = command_retry_count_from_aim(aim)
     commands = []
     command_specs = [
         ("install_command", resolve_install_command(aim, project_root)),
@@ -491,7 +556,17 @@ def run_contract(
     ]
     for key, command in command_specs:
         if command:
-            commands.append({"name": key, **run_required(str(command), cwd=project_root, prefix=prefix)})
+            commands.append(
+                {
+                    "name": key,
+                    **run_required_with_retry(
+                        str(command),
+                        cwd=project_root,
+                        prefix=prefix,
+                        retry_count=retry_count,
+                    ),
+                }
+            )
     payload = collect_candidate_payload(aim, project_root)
     return {
         "label": label,
@@ -759,6 +834,7 @@ def handle_init(args: argparse.Namespace) -> int:
     aim, project_root, workspace = prepare_context(args.aim)
     environment = detect_runtime_environment(project_root)
     lane = resolve_scenario_lane(aim)
+    write_skill_route_plan(workspace, lane)
     write_contract_doc(workspace, aim, "init", "init")
     payload = {
         "label": "init",
@@ -797,6 +873,7 @@ def handle_init(args: argparse.Namespace) -> int:
 def handle_baseline(args: argparse.Namespace) -> int:
     aim, project_root, workspace = prepare_context(args.aim)
     lane = resolve_scenario_lane(aim)
+    write_skill_route_plan(workspace, lane)
     write_contract_doc(workspace, aim, args.label or "baseline", "baseline")
     record = run_contract(aim, project_root, phase="baseline", label=args.label or "baseline")
     policy = exactness_policy_from_aim(aim)
@@ -858,6 +935,7 @@ def handle_status(args: argparse.Namespace) -> int:
     state = load_state(workspace["session_state_json"])
     environment = detect_runtime_environment(project_root)
     lane = resolve_scenario_lane(aim)
+    write_skill_route_plan(workspace, lane)
     payload = {
         "project_root": str(project_root),
         "scenario": lane["scenario"],
@@ -937,6 +1015,60 @@ def handle_loop(args: argparse.Namespace) -> int:
     return 0
 
 
+def handle_autopilot(args: argparse.Namespace) -> int:
+    aim, project_root, workspace = prepare_context(args.aim)
+    lane = resolve_scenario_lane(aim)
+    write_skill_route_plan(workspace, lane)
+
+    baseline = load_json(workspace["baseline_snapshot_json"])
+    actions: list[dict[str, Any]] = []
+    if not baseline:
+        baseline_label = args.baseline_label or "baseline"
+        baseline_record = run_contract(aim, project_root, phase="baseline", label=baseline_label)
+        policy = exactness_policy_from_aim(aim)
+        baseline_exactness = compare_runs(
+            baseline_record,
+            baseline_record,
+            metric_name=str(aim["target_metric_name"]),
+            metric_direction=str(aim["target_metric_direction"]),
+            exactness_policy=policy,
+        )["baseline_exactness"]
+        if not baseline_exactness.get("passed", False):
+            raise RuntimeError("baseline exactness check failed; autopilot cannot continue")
+        write_json(workspace["baseline_snapshot_json"], baseline_record)
+        write_json(workspace["best_result_json"], baseline_record)
+        log_session_artifacts(workspace, baseline_record)
+        state = update_state(
+            workspace,
+            status="baseline_ready",
+            last_experiment=baseline_record["label"],
+            best_experiment=baseline_record["label"],
+            keep=None,
+            next_action="run autopilot candidate iterations",
+        )
+        write_handoff(workspace, state, baseline_record, lane)
+        actions.append({"phase": "baseline", "label": baseline_record["label"]})
+
+    iterations = max(1, int(args.iterations))
+    max_iterations = int(aim.get("max_iterations_per_session", iterations) or iterations)
+    iterations = min(iterations, max_iterations)
+    decisions: list[dict[str, Any]] = []
+    for idx in range(iterations):
+        label = f"{args.label_prefix}-{idx + 1:03d}"
+        _record, decision, _state = execute_candidate(aim, project_root, workspace, label, promote=True)
+        decisions.append({"label": label, "keep": decision["keep"], "improvement": decision["improvement"]})
+
+    payload = {
+        "lane": lane,
+        "actions": actions,
+        "iterations": iterations,
+        "decisions": decisions,
+        "workspace": workspace,
+    }
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="auto-profiling")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -968,6 +1100,13 @@ def build_parser() -> argparse.ArgumentParser:
     loop_parser.add_argument("--aim", default="aim.md")
     loop_parser.add_argument("--label")
     loop_parser.set_defaults(handler=handle_loop)
+
+    autopilot_parser = subparsers.add_parser("autopilot")
+    autopilot_parser.add_argument("--aim", default="aim.md")
+    autopilot_parser.add_argument("--iterations", type=int, default=1)
+    autopilot_parser.add_argument("--label-prefix", default="auto")
+    autopilot_parser.add_argument("--baseline-label")
+    autopilot_parser.set_defaults(handler=handle_autopilot)
 
     status_parser = subparsers.add_parser("status")
     status_parser.add_argument("--aim", default="aim.md")

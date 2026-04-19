@@ -1,120 +1,242 @@
 # Inference Agent
 
-`inference-agent` 是一个面向推理优化工程的系统化仓库。
+`inference-agent` 是一个面向**推理优化工程**的完整仓库：
 
-它把“推理优化知识库”和“可运行的优化 harness”放在同一个工程里，目标不是只写一堆经验文档，而是让你可以围绕真实 baseline、真实环境、真实 exactness 契约去持续做性能优化。
+- 不是只给“建议”，而是给“可执行流程”
+- 不是只看吞吐/延迟，而是坚持 **exactness-first（结果一致优先）**
+- 不是一次性调参，而是支持可恢复、可审计、可交接的持续优化
 
-这个仓库适合以下任务：
+---
 
-- 小模型或非 LLM 推理链路的端到端优化
-- 大模型在线推理服务优化
-- CUDA / CUTLASS / Triton kernel 级问题下钻
-- 构建 exactness-first、可恢复、可审计的推理优化流程
+## 目录
 
-## 核心原则
+1. [项目定位与目标](#项目定位与目标)
+2. [核心设计原则](#核心设计原则)
+3. [仓库总体架构](#仓库总体架构)
+4. [四大模块详解](#四大模块详解)
+5. [安装与环境准备](#安装与环境准备)
+6. [快速开始（10 分钟）](#快速开始10-分钟)
+7. [auto-profiling 详细用法](#auto-profiling-详细用法)
+8. [三类优化场景最佳实践](#三类优化场景最佳实践)
+9. [在 Codex/智能体中独立使用 skills](#在-codex智能体中独立使用-skills)
+10. [常见问题与排障](#常见问题与排障)
+11. [扩展建议](#扩展建议)
 
-这个工程默认遵循以下原则：
+---
 
-- 结果一致优先，性能提升第二
-- 先建立可信 baseline，再做优化
-- 一次只做一个有边界的实验
-- 所有保留决策都需要 exactness 和 metric 证据
-- 优化要能恢复、能交接、能重复执行
+## 项目定位与目标
 
-如果你的目标只是“随便调快一点”，这个仓库并不是为那种工作方式设计的。
+这个仓库解决的是三类核心问题：
 
-## 仓库结构
+1. **端到端推理链路优化（E2E）**
+   - 小模型、Diffusion、通用 DL、Transformer、SAM、ViT、树模型等
+2. **大模型在线推理服务优化（LLM Serving）**
+   - SGLang / vLLM / TensorRT-LLM / Triton / PyTorch serving
+3. **算子与 Kernel 深度优化（CUDA / CUTLASS / Triton）**
+   - NCU 分析、崩溃排障、backend 选择、算子迭代闭环
 
-仓库由 4 个核心部分组成：
+仓库最终目标：
 
-- `e2e-inference-opt-skill/`
-  - 面向小模型、非 LLM、多阶段推理链路的端到端优化知识库
-- `llm-serving-opt-skill/`
-  - 面向 SGLang、vLLM、TensorRT-LLM、Triton、PyTorch serving 的服务层优化知识库
-- `cuda-kernel-opt-skill/`
-  - 面向 CUDA / CUTLASS / Triton kernel、算子、NCU 分析、crash triage 的深度优化知识库
-- `auto-profiling/`
-  - 面向真实项目执行 baseline、候选实验、评估、handoff 的最小运行时
+- 用户只需要在 `auto-profiling` 中编辑需求（`aim`）
+- 系统可自动拉起 baseline、验证正确性、迭代候选实验
+- 并把过程工件完整记录，便于下次继续和多人协作
 
-一句话理解：
+---
 
-- 三个 `*-opt-skill` 模块负责告诉你“该优化什么、先走哪条 lane”
-- `auto-profiling` 负责告诉你“如何把优化过程真正跑起来并留下工件”
+## 核心设计原则
 
-## 三种使用场景
+- **正确性优先**：性能提升不能以结果回归为代价
+- **baseline 先行**：没有可信 baseline，不做优化结论
+- **单变量实验**：每轮只做有边界的一个变化
+- **证据驱动决策**：保留/回滚必须有 metric + exactness 证据
+- **可恢复可交接**：中断后可继续、换 session 可续跑
 
-### 1. E2E 推理链路优化
+---
 
-适用情况：
+## 仓库总体架构
 
-- 业务模型不是典型 LLM serving
-- 问题横跨 preprocess、forward、postprocess、IO、缓存、部署
-- 你需要做系统级而不是单算子级优化
+可以把仓库理解为“3 个知识模块 + 1 个执行模块”：
 
-从这里开始：
+- `e2e-inference-opt-skill/`：E2E 优化知识系统
+- `llm-serving-opt-skill/`：LLM serving 优化知识系统
+- `cuda-kernel-opt-skill/`：算子/kernel 优化知识系统
+- `auto-profiling/`：执行优化闭环的运行时
 
-- [e2e-inference-opt-skill](e2e-inference-opt-skill/SKILL.md)
-- [aim.e2e.md](auto-profiling/aim.e2e.md)
+一句话：
 
-### 2. LLM Serving 优化
+- `*-opt-skill` 决定“该优化什么、先走哪条 lane”
+- `auto-profiling` 决定“如何稳定地把优化流程跑起来”
 
-适用情况：
+---
 
-- 你关心 TTFT、TPOT、ITL、tokens/s、req/s
-- 你在做 SGLang、vLLM、TensorRT-LLM、Triton 或自定义 PyTorch 服务
-- 你需要分析 scheduler、KV cache、prefix cache、deployment、benchmark
+## 四大模块详解
 
-从这里开始：
+## 1) `e2e-inference-opt-skill`
 
-- [llm-serving-opt-skill](llm-serving-opt-skill/SKILL.md)
-- [aim.llm-serving.md](auto-profiling/aim.llm-serving.md)
+适用：
 
-### 3. CUDA / Kernel 级优化
+- 非 LLM 或小模型端到端链路
+- 多阶段 pipeline：preprocess -> infer -> postprocess -> store/serve
+- 覆盖模型家族：small-model / diffusion / DL / transformer / SAM / ViT / tree
 
-适用情况：
+入口：
 
-- 你已经通过 profile 把瓶颈定位到算子或 kernel
-- 你需要做 NCU、kernel benchmark、custom kernel workflow、CUDA crash triage
-- 你需要从 serving 层继续下钻到 operator / kernel 层
+- [e2e-inference-opt-skill/SKILL.md](e2e-inference-opt-skill/SKILL.md)
+- [e2e-inference-opt-skill/references/09_model_family_coverage.md](e2e-inference-opt-skill/references/09_model_family_coverage.md)
 
-从这里开始：
+---
 
-- [cuda-kernel-opt-skill](cuda-kernel-opt-skill/SKILL.md)
-- [aim.cuda-kernel.md](auto-profiling/aim.cuda-kernel.md)
+## 2) `llm-serving-opt-skill`
 
-## 推荐上手路径
+适用：
 
-如果你是第一次使用这个仓库，推荐按下面的顺序：
+- 在线 serving 场景（TTFT / TPOT / ITL / tokens/s / req/s）
+- SGLang / vLLM / TensorRT-LLM 等 backend 对比与调优
+- KV cache、scheduler、deployment、distributed AI-infra 深度优化
 
-1. 确定当前问题属于 `e2e-inference`、`llm-serving` 还是 `cuda-kernel`
-2. 阅读对应的顶层 `SKILL.md`
-3. 进入 `auto-profiling/`，选择对应的 `aim.*.md`
-4. 在 `aim` 中填写目标仓库、baseline 命令、exactness 检查命令和 metric 输出路径
-5. 运行 `init`、`collect-env`、`baseline`
-6. 观察 `.auto-profiling/` 下的 contract、evaluator report 和 handoff
-7. 再做单轮 bounded candidate experiment
+入口：
 
-## 5 分钟快速开始
+- [llm-serving-opt-skill/SKILL.md](llm-serving-opt-skill/SKILL.md)
+- [llm-serving-opt-skill/references/09_distributed_ai_infra.md](llm-serving-opt-skill/references/09_distributed_ai_infra.md)
 
-以下示例以 `llm-serving` 场景为例。
+---
 
-先进入运行时目录：
+## 3) `cuda-kernel-opt-skill`
+
+适用：
+
+- 瓶颈已下钻到 operator/kernel
+- CUDA crash triage、NCU 定位、backend 选择
+- CUDA / CUTLASS / Triton 深度优化
+
+新增能力（可直接用）：
+
+- “算子逻辑 -> CPU baseline -> CUDA/Triton scaffold” 自动生成
+- 脚本：`operator_backend_synth.py`
+
+入口：
+
+- [cuda-kernel-opt-skill/SKILL.md](cuda-kernel-opt-skill/SKILL.md)
+- [operator-backend-synthesis-skill](cuda-kernel-opt-skill/skills/operator-backend-synthesis-skill/SKILL.md)
+
+---
+
+## 4) `auto-profiling`
+
+这是项目的执行中枢。它负责：
+
+- 初始化状态
+- 环境采集
+- baseline 记录
+- candidate 评估与决策
+- autopilot 自动迭代
+- handoff 文档输出
+
+核心文件：
+
+- [auto-profiling/runner.py](auto-profiling/runner.py)
+- [auto-profiling/scorer.py](auto-profiling/scorer.py)
+- [auto-profiling/bootstrap_aim.py](auto-profiling/bootstrap_aim.py)
+- [auto-profiling/README.md](auto-profiling/README.md)
+
+---
+
+## 安装与环境准备
+
+建议：
+
+- Python 3.10+
+- Git
+- 可选：`uv`（推荐）
+- 可选（GPU/KERNEL 场景）：`nvidia-smi`、`nvcc`、`ncu`
+
+进入运行时目录：
 
 ```bash
 cd auto-profiling
 ```
 
-优先使用 `uv` 运行；如果环境里没有 `uv`，可以直接用 `python3`。
+建议使用 `uv`：
 
-### 第一步：选择一个场景模板
+```bash
+uv run runner.py status --aim aim.md
+```
 
-编辑：
+没有 `uv` 时：
 
+```bash
+python3 runner.py status --aim aim.md
+```
+
+---
+
+## 快速开始（10 分钟）
+
+下面以 LLM serving 为例。
+
+### Step 1：生成或选择 `aim`
+
+你有两种方式：
+
+1) 手工编辑模板：
 - `aim.e2e.md`
 - `aim.llm-serving.md`
 - `aim.cuda-kernel.md`
 
-你至少需要填这些字段：
+2) 用生成器快速初始化（推荐）：
+
+```bash
+python3 auto-profiling/bootstrap_aim.py \
+  --mode llm-serving \
+  --profile vllm \
+  --project-name demo-vllm \
+  --target-repo-path /path/to/target-repo \
+  --output auto-profiling/aim.generated.md
+```
+
+### Step 2：初始化
+
+```bash
+uv run runner.py init --aim aim.generated.md
+```
+
+### Step 3：收集环境
+
+```bash
+uv run runner.py collect-env --aim aim.generated.md
+```
+
+### Step 4：记录 baseline
+
+```bash
+uv run runner.py baseline --aim aim.generated.md
+```
+
+### Step 5：自动迭代（one-click）
+
+```bash
+uv run runner.py autopilot --aim aim.generated.md --iterations 3 --label-prefix auto
+```
+
+---
+
+## auto-profiling 详细用法
+
+## 1) 命令概览
+
+- `init`：初始化工作区与工件
+- `collect-env`：采集环境指纹
+- `baseline`：建立可信基线
+- `candidate`：执行一轮候选实验并可晋升最优
+- `evaluate`：执行评估但不晋升
+- `loop`：单步循环（无 baseline 时先建 baseline）
+- `autopilot`：连续多轮自动迭代
+- `status`：查看当前状态
+- `handoff`：输出下一轮接力说明
+
+## 2) 关键参数
+
+`aim` 至少应包含：
 
 - `target_repo_path`
 - `baseline_run_command`
@@ -125,187 +247,160 @@ cd auto-profiling
 - `target_metric_name`
 - `target_metric_direction`
 
-### 第二步：初始化工作区
+可选增强：
 
-```bash
-uv run runner.py init --aim aim.llm-serving.md
-```
+- `command_retry_count`：命令重试次数（提升稳定性）
+- `allowed_mutations` / `blocked_by_default`
+- `known_bottlenecks` / `suspected_safe_lanes`
 
-如果没有 `uv`：
-
-```bash
-python3 runner.py init --aim aim.llm-serving.md
-```
-
-### 第三步：先摸清环境
-
-```bash
-uv run runner.py collect-env --aim aim.llm-serving.md
-```
-
-这一步会收集：
-
-- shell 与包管理器回退结果
-- Python / 平台 / 机器信息
-- 常见工具路径
-- 常见依赖包版本
-- 可用时附加 `vllm collect-env` 摘要
-
-### 第四步：记录可信 baseline
-
-```bash
-uv run runner.py baseline --aim aim.llm-serving.md
-```
-
-### 第五步：查看当前状态
-
-```bash
-uv run runner.py status --aim aim.llm-serving.md
-```
-
-### 第六步：做一轮 bounded candidate
-
-```bash
-uv run runner.py candidate --aim aim.llm-serving.md --label exp-001
-```
-
-## `auto-profiling` 是怎么工作的
-
-`auto-profiling/` 是这个仓库里最接近“可执行系统”的部分。
-
-关键文件：
-
-- [runner.py](auto-profiling/runner.py)
-- [scorer.py](auto-profiling/scorer.py)
-- [README.md](auto-profiling/README.md)
-- [aim.md](auto-profiling/aim.md)
-
-运行时会在目标仓库写入 `.auto-profiling/` 工件，用于持续记录优化过程：
+## 3) 运行时工件（在目标仓库 `.auto-profiling/`）
 
 - `current_contract.md`
 - `evaluator_report.md`
 - `next_handoff.md`
+- `skill_route_plan.md`
 - `session_state.json`
+- `baseline_snapshot.json`
+- `best_result.json`
 - `experiment_log.md`
 - `experiment_log.jsonl`
+- `progress.md` / `worklog.md` / `findings.md`
 
-这意味着：
+## 4) autopilot 的行为
 
-- 你可以中断后继续
-- 你可以在新 session 恢复
-- 你可以审计每一轮实验为什么被保留或拒绝
+`autopilot` 会：
 
-## 三大模块怎么协作
+1. 若缺少 baseline，自动补建
+2. 连续运行 `N` 轮 candidate（`--iterations`）
+3. 每轮按 exactness + metric 决策 keep/reject
+4. 自动刷新 `next_handoff.md` 与 `skill_route_plan.md`
 
-### `e2e-inference-opt-skill`
+这使得“只编辑需求 + 一键迭代”成为可行工作流。
 
-负责：
+---
 
-- baseline
-- profiling
-- roofline
-- memory / IO
-- parallelism
-- pipeline overlap
-- deployment
+## 三类优化场景最佳实践
 
-适合“系统级端到端链路”问题。
+## A. E2E 推理优化
 
-### `llm-serving-opt-skill`
+推荐路径：
 
-负责：
+1. 用 `bootstrap_aim.py --mode e2e --profile <family>` 生成初始 aim
+2. 跑 baseline 与 profile
+3. 先修系统级瓶颈（IO/copy/schedule）
+4. 必要时再下钻 kernel
 
-- serving baseline
-- benchmark workflow
-- profile analysis
-- KV cache / prefix cache / scheduler
-- deployment cookbook
+常见 profile：
 
-适合“服务层 LLM 推理系统”问题。
+- `small-model`
+- `diffusion`
+- `dl`
+- `transformer`
+- `sam`
+- `vit`
+- `tree`
 
-### `cuda-kernel-opt-skill`
+---
 
-负责：
+## B. LLM Serving 优化
 
-- CUDA crash debug
-- profile triage
-- backend selection
-- custom kernel workflow
-- vendored `cuda-optimized-skill`
+推荐路径：
 
-适合“算子或 kernel 已经成为主瓶颈”的问题。
+1. 用 `bootstrap_aim.py --mode llm-serving --profile <backend>`
+2. 明确核心指标（TTFT/TPOT/ITL/throughput）
+3. 先做服务层调度/KV 策略优化
+4. 再针对瓶颈下钻到 operator/kernel
 
-## 推荐工作流
+支持 backend：
 
-一个常见的完整流程是：
+- `sglang`
+- `vllm`
+- `trtllm`
 
-1. 用 `llm-serving-opt-skill` 或 `e2e-inference-opt-skill` 先完成问题定性
-2. 在 `auto-profiling` 中写好 `aim`
-3. 跑 `collect-env`
-4. 跑 `baseline`
-5. 从 profile / benchmark / correctness 证据中选择一条最安全的优化 lane
-6. 只做一个变更
-7. 重新跑 exactness 和 metric
-8. 看 evaluator report 决定 keep 或 revert
-9. 必要时再升级到 `cuda-kernel-opt-skill`
+---
 
-## 包管理与环境策略
+## C. Operator / Kernel 优化
 
-当前运行时的默认策略是：
-
-- 项目安装优先 `uv`
-- 没有 `uv` 时回退到 `pip`
-- 如果你在 `conda` 环境中运行，也可以通过当前环境的 `python3` 直接执行
-- 如果需要显式激活环境，可以在 `aim` 中设置 `python_env_command`
-
-也就是说，最稳妥的方式通常是：
-
-- 先进入你自己的目标 Python 环境
-- 再运行 `runner.py`
-
-## 如何验证仓库可用
-
-### 技能目录测试
-
-在仓库根目录运行：
+先生成算子脚手架：
 
 ```bash
-python3 -m unittest tests/test_skill_catalog.py -v
+python cuda-kernel-opt-skill/skills/cuda-optimized-skill/operator-optimize-loop/scripts/operator_backend_synth.py \
+  --name demo_gemm \
+  --logic "batched matmul for inference" \
+  --op-type matmul \
+  --backend auto \
+  --m 1024 --n 1024 --k 1024 \
+  --output-dir /tmp/op-workspace
 ```
 
-### `auto-profiling` 运行时测试
+输出内容：
 
-在 `auto-profiling/` 目录运行：
+- `cpu_reference.py`
+- `kernel_cuda.cu` 或 `kernel_triton.py`
+- `benchmark_harness.py`
+- `manifest.json`
 
-```bash
-cd auto-profiling
-python3 -m unittest tests/test_runtime.py -v
-```
+然后再进入 `optimize_loop.py` 做有边界的多轮优化。
 
-## 适合谁使用
+---
 
-这个仓库适合：
+## 在 Codex/智能体中独立使用 skills
 
-- 做推理优化的工程师
-- 做 LLM serving 系统优化的工程师
-- 需要把优化流程沉淀成可复用知识和可执行 runtime 的团队
-- 希望把 exactness-first 原则真正落到日常优化中的使用者
+即使不跑 `autopilot`，三条方向的 skills 也可以独立使用：
 
-## 常见误区
+- E2E：`e2e-inference-opt-skill/SKILL.md`
+- LLM：`llm-serving-opt-skill/SKILL.md`
+- Kernel：`cuda-kernel-opt-skill/SKILL.md`
 
-- 直接开始调参，不先建立 baseline
-- 把精度漂移当成性能优化的默认代价
-- 一轮实验改太多变量
-- 不输出结构化 metric / exactness JSON
-- 不区分 E2E、serving、kernel 三种问题层次
+同时，`auto-profiling` 会产出 `skill_route_plan.md`，帮助新 session 快速对齐当前场景和推荐技能链路。
 
-## 进一步阅读
+---
 
+## 常见问题与排障
+
+### Q1：为什么 baseline 必须先通过 exactness？
+
+因为 baseline 是后续全部比较的参考点。如果 baseline 本身不可信，任何“提升”都没有意义。
+
+### Q2：autopilot 会不会盲目保留劣化结果？
+
+不会。每轮都经过 scorer 的 exactness + metric 判定，未通过 exactness 或指标未提升都会 reject。
+
+### Q3：如何提升运行稳定性？
+
+在 `aim` 中设置：
+
+- `command_retry_count: 2`（或更高）
+
+并尽量保证 `baseline_run_command` 和 `exactness_check_command` 可重复执行。
+
+### Q4：如何在团队中交接？
+
+优先查看目标仓库 `.auto-profiling/`：
+
+- `next_handoff.md`
+- `evaluator_report.md`
+- `experiment_log.md`
+- `skill_route_plan.md`
+
+---
+
+## 扩展建议
+
+如果你要继续增强这个仓库，建议优先做：
+
+1. 更丰富的算子模板（conv/attention/rmsnorm/softmax）
+2. 分布式 serving 的更细粒度调度与资源隔离策略
+3. 统计稳健判定（多次采样 + 置信区间 + 最小收益阈值）
+4. 与 CI/CD 的自动回归集成
+
+---
+
+## 相关文档
+
+- [README.en.md](README.en.md)
 - [auto-profiling/README.md](auto-profiling/README.md)
 - [e2e-inference-opt-skill/SKILL.md](e2e-inference-opt-skill/SKILL.md)
 - [llm-serving-opt-skill/SKILL.md](llm-serving-opt-skill/SKILL.md)
 - [cuda-kernel-opt-skill/SKILL.md](cuda-kernel-opt-skill/SKILL.md)
 
-如果你只想记住一句话：
-
-> 先选对场景，再写 `aim`，再让 `auto-profiling` 带着 exactness 契约去跑优化闭环。
