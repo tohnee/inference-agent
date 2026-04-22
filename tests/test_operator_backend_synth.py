@@ -82,6 +82,7 @@ class OperatorBackendSynthTests(unittest.TestCase):
             self.assertEqual(payload["backend"], "cuda")
             self.assertTrue((op_dir / "cpu_reference.py").exists())
             self.assertTrue((op_dir / "kernel_cuda.cu").exists())
+            self.assertTrue((op_dir / "kernel_cuda.py").exists())
             self.assertTrue((op_dir / "benchmark_harness.py").exists())
 
 

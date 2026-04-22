@@ -25,6 +25,7 @@ def choose_backend(spec: OperatorSpec, backend_hint: str) -> str:
 
     if spec.op_type == "matmul":
         volume = spec.m * spec.n * spec.k
+        # Large and TensorCore-friendly GEMM tends to benefit from CUDA/CUTLASS-style kernels.
         if volume >= 256 * 256 * 256 and spec.k % 16 == 0:
             return "cuda"
         return "triton"
@@ -43,7 +44,10 @@ def cpu_reference_source(spec: OperatorSpec) -> str:
         body = "return a + b"
         inputs = "a: torch.Tensor, b: torch.Tensor"
     else:
-        body = "return (x - x.mean(dim=-1, keepdim=True)) / (x.var(dim=-1, keepdim=True, unbiased=False) + eps).sqrt()"
+        body = (
+            "return (x - x.mean(dim=-1, keepdim=True)) / "
+            "(x.var(dim=-1, keepdim=True, unbiased=False) + eps).sqrt()"
+        )
         inputs = "x: torch.Tensor, eps: float = 1e-5"
 
     return f'''"""CPU reference for {spec.name}.\nLogic: {spec.logic}"""
@@ -58,17 +62,17 @@ def op_cpu({inputs}) -> torch.Tensor:
 
 
 def triton_template(spec: OperatorSpec) -> str:
-    return f'''"""Triton scaffold for {spec.name}.\nLogic: {spec.logic}"""
+    return f'''"""Triton scaffold for {spec.name}.\nLogic: {spec.logic}
+
+Notes:
+- Keep signature identical to cpu_reference.op_cpu where possible.
+- Fill kernel launch + grid mapping in op_triton.
+"""
 from __future__ import annotations
 
 import torch
-
-try:
-    import triton
-    import triton.language as tl
-except Exception:  # pragma: no cover
-    triton = None
-    tl = None
+import triton
+import triton.language as tl
 
 
 def op_triton(*args, **kwargs) -> torch.Tensor:
@@ -76,7 +80,7 @@ def op_triton(*args, **kwargs) -> torch.Tensor:
 '''
 
 
-def cuda_template(spec: OperatorSpec) -> str:
+def cuda_source_template(spec: OperatorSpec) -> str:
     return f'''// CUDA scaffold for {spec.name}
 // Logic: {spec.logic}
 #include <torch/extension.h>
@@ -93,19 +97,49 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {{
 '''
 
 
+def cuda_python_loader_template(spec: OperatorSpec) -> str:
+    return f'''"""Python loader for CUDA extension of {spec.name}."""
+from __future__ import annotations
+
+from pathlib import Path
+
+from torch.utils.cpp_extension import load
+
+
+_THIS_DIR = Path(__file__).resolve().parent
+_EXT = load(
+    name="{spec.name}_cuda_ext",
+    sources=[str(_THIS_DIR / "kernel_cuda.cu")],
+    verbose=False,
+)
+
+
+def op_cuda(*args, **kwargs):
+    return _EXT.op_cuda(*args, **kwargs)
+'''
+
+
+def _build_cpu_inputs_code(op_type: str) -> str:
+    if op_type == "matmul":
+        return """
+    a = torch.randn(m, k, dtype=dtype, device=\"cpu\")
+    b = torch.randn(k, n, dtype=dtype, device=\"cpu\")
+    return a, b
+"""
+    if op_type == "elementwise_add":
+        return """
+    a = torch.randn(m, n, dtype=dtype, device=\"cpu\")
+    b = torch.randn(m, n, dtype=dtype, device=\"cpu\")
+    return a, b
+"""
+    return """
+    x = torch.randn(m, n, dtype=dtype, device=\"cpu\")
+    return (x,)
+"""
+
+
 def harness_source(spec: OperatorSpec, backend: str) -> str:
-    setup = {
-        "matmul": "a = torch.randn(m, k, dtype=dtype, device=device)\n    b = torch.randn(k, n, dtype=dtype, device=device)\n    return a, b",
-        "elementwise_add": "a = torch.randn(m, n, dtype=dtype, device=device)\n    b = torch.randn(m, n, dtype=dtype, device=device)\n    return a, b",
-        "layernorm": "x = torch.randn(m, n, dtype=dtype, device=device)\n    return (x,)",
-    }[spec.op_type]
-
-    backend_call = {
-        "matmul": "backend_out = backend_fn(*backend_inputs)",
-        "elementwise_add": "backend_out = backend_fn(*backend_inputs)",
-        "layernorm": "backend_out = backend_fn(*backend_inputs)",
-    }[spec.op_type]
-
+    build_cpu_inputs = _build_cpu_inputs_code(spec.op_type).rstrip()
     return f'''"""Benchmark + exactness harness for {spec.name}."""
 from __future__ import annotations
 
@@ -119,8 +153,12 @@ import torch
 from cpu_reference import op_cpu
 
 
-def build_inputs(m: int, n: int, k: int, device: str, dtype: torch.dtype):
-    {setup}
+def build_cpu_inputs(m: int, n: int, k: int, dtype: torch.dtype):
+{build_cpu_inputs}
+
+
+def to_cuda(inputs):
+    return tuple(t.cuda(non_blocking=True) if isinstance(t, torch.Tensor) else t for t in inputs)
 
 
 def main() -> int:
@@ -131,29 +169,38 @@ def main() -> int:
     parser.add_argument("--m", type=int, default={spec.m})
     parser.add_argument("--n", type=int, default={spec.n})
     parser.add_argument("--k", type=int, default={spec.k})
+    parser.add_argument("--seed", type=int, default=2026)
     args = parser.parse_args()
 
+    if not torch.cuda.is_available():
+        raise RuntimeError("CUDA is required for backend benchmark/evaluation")
+
+    torch.manual_seed(args.seed)
     dtype = torch.float32
-    cpu_inputs = build_inputs(args.m, args.n, args.k, device="cpu", dtype=dtype)
+    cpu_inputs = build_cpu_inputs(args.m, args.n, args.k, dtype=dtype)
     ref = op_cpu(*cpu_inputs)
 
     if args.backend == "triton":
         from kernel_triton import op_triton as backend_fn
     else:
-        from kernel_cuda import op_cuda as backend_fn  # expected python binding module
+        from kernel_cuda import op_cuda as backend_fn
 
-    backend_inputs = build_inputs(args.m, args.n, args.k, device="cuda", dtype=dtype)
+    backend_inputs = to_cuda(cpu_inputs)
     torch.cuda.synchronize()
     start = time.perf_counter()
-    {backend_call}
+    backend_out = backend_fn(*backend_inputs)
     torch.cuda.synchronize()
     latency_ms = (time.perf_counter() - start) * 1000
 
     backend_cpu = backend_out.detach().cpu()
     passed = torch.allclose(ref, backend_cpu, atol=1e-4, rtol=1e-4)
     max_abs_error = float((ref - backend_cpu).abs().max().item())
+    max_rel_error = float(((ref - backend_cpu).abs() / (ref.abs() + 1e-12)).max().item())
 
-    Path(args.metric_output).write_text(json.dumps({{"metrics": {{"latency_ms": latency_ms}}}}, indent=2), encoding="utf-8")
+    Path(args.metric_output).write_text(
+        json.dumps({{"metrics": {{"latency_ms": latency_ms}}}}, indent=2),
+        encoding="utf-8",
+    )
     Path(args.exactness_output).write_text(
         json.dumps(
             {{
@@ -161,6 +208,7 @@ def main() -> int:
                     "passed": bool(passed),
                     "mismatch_count": 0 if passed else 1,
                     "max_abs_error": max_abs_error,
+                    "max_rel_error": max_rel_error,
                     "logic_equivalent": True,
                     "algorithm_equivalent": True,
                 }}
@@ -212,7 +260,8 @@ def main() -> int:
     if selected_backend == "triton":
         write_text(out_dir / "kernel_triton.py", triton_template(spec))
     else:
-        write_text(out_dir / "kernel_cuda.cu", cuda_template(spec))
+        write_text(out_dir / "kernel_cuda.cu", cuda_source_template(spec))
+        write_text(out_dir / "kernel_cuda.py", cuda_python_loader_template(spec))
     write_text(out_dir / "benchmark_harness.py", harness_source(spec, selected_backend))
 
     manifest = {
@@ -223,6 +272,7 @@ def main() -> int:
         "backend": selected_backend,
         "generated_files": sorted(p.name for p in out_dir.iterdir() if p.is_file()),
         "baseline": "cpu_reference.py::op_cpu",
+        "exactness_contract": "compare backend output against CPU reference with atol=1e-4, rtol=1e-4",
     }
     write_text(out_dir / "manifest.json", json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
     print(json.dumps(manifest, ensure_ascii=False, indent=2))

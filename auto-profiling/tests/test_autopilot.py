@@ -62,6 +62,10 @@ class AutopilotRuntimeTests(unittest.TestCase):
                         f"- exactness_check_command: {exact_cmd}",
                         "- exactness_mode: exact-parity",
                         "",
+                        "## 7. Experiment Budget",
+                        "",
+                        "- max_iterations_per_session: 1",
+                        "",
                     ]
                 ),
                 encoding="utf-8",
@@ -85,8 +89,8 @@ class AutopilotRuntimeTests(unittest.TestCase):
                 text=True,
             )
             payload = json.loads(result.stdout)
-            self.assertEqual(payload["iterations"], 2)
-            self.assertEqual(len(payload["decisions"]), 2)
+            self.assertEqual(payload["iterations"], 1)
+            self.assertEqual(len(payload["decisions"]), 1)
             self.assertTrue((repo / ".auto-profiling" / "skill_route_plan.md").exists())
 
 

@@ -1025,6 +1025,16 @@ def handle_autopilot(args: argparse.Namespace) -> int:
     if not baseline:
         baseline_label = args.baseline_label or "baseline"
         baseline_record = run_contract(aim, project_root, phase="baseline", label=baseline_label)
+        policy = exactness_policy_from_aim(aim)
+        baseline_exactness = compare_runs(
+            baseline_record,
+            baseline_record,
+            metric_name=str(aim["target_metric_name"]),
+            metric_direction=str(aim["target_metric_direction"]),
+            exactness_policy=policy,
+        )["baseline_exactness"]
+        if not baseline_exactness.get("passed", False):
+            raise RuntimeError("baseline exactness check failed; autopilot cannot continue")
         write_json(workspace["baseline_snapshot_json"], baseline_record)
         write_json(workspace["best_result_json"], baseline_record)
         log_session_artifacts(workspace, baseline_record)
@@ -1040,6 +1050,8 @@ def handle_autopilot(args: argparse.Namespace) -> int:
         actions.append({"phase": "baseline", "label": baseline_record["label"]})
 
     iterations = max(1, int(args.iterations))
+    max_iterations = int(aim.get("max_iterations_per_session", iterations) or iterations)
+    iterations = min(iterations, max_iterations)
     decisions: list[dict[str, Any]] = []
     for idx in range(iterations):
         label = f"{args.label_prefix}-{idx + 1:03d}"
