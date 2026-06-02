@@ -293,23 +293,27 @@ def _color(text: str, ok: bool) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _time_iterations(fn, warmup: int, repeat: int) -> list:
-    """Run fn for warmup + repeat iterations and return per-iter ms timings."""
+def measure_iteration_times(fn, warmup: int, repeat: int) -> list[float]:
+    """Run fn for warmup + repeat iterations and return per-iteration timings."""
     for _ in range(warmup):
         fn()
     torch.cuda.synchronize()
 
-    start_event = torch.cuda.Event(enable_timing=True)
-    end_event = torch.cuda.Event(enable_timing=True)
-
-    start_event.record()
+    samples = []
     for _ in range(repeat):
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+        start_event.record()
         fn()
-    end_event.record()
-    torch.cuda.synchronize()
+        end_event.record()
+        torch.cuda.synchronize()
+        samples.append(float(start_event.elapsed_time(end_event)))
+    return samples
 
-    avg_ms = start_event.elapsed_time(end_event) / repeat
-    return [avg_ms] * repeat
+
+def _time_iterations(fn, warmup: int, repeat: int) -> list[float]:
+    """Backward-compatible wrapper for callers using the legacy helper name."""
+    return measure_iteration_times(fn, warmup, repeat)
 
 
 

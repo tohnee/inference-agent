@@ -786,6 +786,27 @@ def ensure_run_dir(solution_file: Path, run_dir_arg: str) -> Path:
     return run_dir
 
 
+def resolve_support_paths() -> tuple[Path, Path]:
+    skill_root = Path(__file__).resolve().parents[4]
+    benchmark_script = (
+        skill_root
+        / "skills"
+        / "cuda-optimized-skill"
+        / "kernel-benchmark"
+        / "scripts"
+        / "benchmark.py"
+    )
+    global_memory_file = (
+        skill_root
+        / "skills"
+        / "cuda-optimized-skill"
+        / "operator-optimize-loop"
+        / "strategy-memory"
+        / "global_strategy_memory.json"
+    )
+    return benchmark_script, global_memory_file
+
+
 
 def load_manifest(manifest_path: Path, args: argparse.Namespace, run_dir: Path, solution_file: Path, backend: str) -> dict[str, Any]:
     manifest = read_json(manifest_path, None)
@@ -1196,8 +1217,7 @@ def main() -> int:
         print(f"Unsupported extra args: {bad}", file=sys.stderr)
         return 2
 
-    repo_root = Path(__file__).resolve().parents[4]
-    benchmark_script = repo_root / "skills" / "optimized-skill" / "kernel-benchmark" / "scripts" / "benchmark.py"
+    benchmark_script, global_memory_file = resolve_support_paths()
     solution_file = Path(args.solution_file).resolve()
     backend = infer_backend(solution_file, args.backend)
     ref_file = Path(args.ref).resolve() if args.ref else None
@@ -1207,8 +1227,6 @@ def main() -> int:
     summary_path = run_dir / "final_summary.md"
 
     scope_key = build_scope_key(backend, solution_file, ref_file, list(args.dim_args), args.arch)
-    global_memory_file = repo_root / "skills" / "optimized-skill" / "operator-optimize-loop" / "strategy-memory" / "global_strategy_memory.json"
-
     manifest = load_manifest(manifest_path, args, run_dir, solution_file, backend)
     strategy_memory = ensure_strategy_memory(manifest, scope_key, global_memory_file)
 

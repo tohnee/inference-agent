@@ -462,6 +462,27 @@ def ensure_git_repo(project_root: Path, required: bool) -> None:
         raise RuntimeError("git repository required by aim.md but not available at target_repo_path")
 
 
+def stop_after_consecutive_failures_from_aim(aim: dict[str, Any]) -> int:
+    raw = aim.get("stop_after_consecutive_failures", 0)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, value)
+
+
+def require_revert_on_failure_from_aim(aim: dict[str, Any]) -> bool:
+    return bool(aim.get("require_revert_on_failure", False))
+
+
+def revert_failed_candidate_if_required(aim: dict[str, Any], project_root: Path) -> dict[str, Any] | None:
+    if not require_revert_on_failure_from_aim(aim):
+        return None
+    if not bool(aim.get("git_required", False)):
+        return None
+    return shell_result("git restore --source=HEAD --staged --worktree .", cwd=project_root)
+
+
 def apply_workspace_overrides(
     workspace: dict[str, str],
     aim: dict[str, Any],
@@ -921,9 +942,23 @@ def execute_candidate(
     if promote and decision["keep"]:
         promoted = {**record, "decision": decision}
         write_json(workspace["best_result_json"], promoted)
+    revert_result = None
+    if not decision["keep"]:
+        revert_result = revert_failed_candidate_if_required(aim, project_root)
+        if revert_result:
+            decision["revert"] = {
+                "attempted": True,
+                "exit_code": revert_result["exit_code"],
+                "command": revert_result["command"],
+            }
     write_evaluator_report(workspace, reference, record, decision)
     best = load_json(workspace["best_result_json"])
-    next_action = "propose next bounded experiment" if decision["keep"] else "revert or adjust candidate and rerun"
+    if decision["keep"]:
+        next_action = "propose next bounded experiment"
+    elif revert_result:
+        next_action = "candidate reverted; adjust bounded experiment and rerun"
+    else:
+        next_action = "revert or adjust candidate and rerun"
     state = update_state(
         workspace,
         status="candidate_kept" if decision["keep"] else "candidate_rejected",
@@ -1159,16 +1194,38 @@ def handle_autopilot(args: argparse.Namespace) -> int:
     iterations = max(1, int(args.iterations))
     max_iterations = int(aim.get("max_iterations_per_session", iterations) or iterations)
     iterations = min(iterations, max_iterations)
+    stop_after_failures = stop_after_consecutive_failures_from_aim(aim)
     decisions: list[dict[str, Any]] = []
     for idx in range(iterations):
         label = f"{args.label_prefix}-{idx + 1:03d}"
-        _record, decision, _state = execute_candidate(aim, project_root, workspace, label, promote=True)
+        _record, decision, state = execute_candidate(aim, project_root, workspace, label, promote=True)
         decisions.append({"label": label, "keep": decision["keep"], "improvement": decision["improvement"]})
+        if (
+            stop_after_failures
+            and not decision["keep"]
+            and int(state.get("consecutive_failures", 0)) >= stop_after_failures
+        ):
+            state = update_state(
+                workspace,
+                status="stopped_after_failures",
+                last_experiment=None,
+                best_experiment=state.get("best_experiment"),
+                keep=None,
+                next_action="review failed candidate, adjust mutation scope, and rerun from the current best baseline",
+            )
+            write_handoff(
+                workspace,
+                state,
+                load_json(workspace["best_result_json"]) or select_reference(workspace),
+                lane,
+                decision,
+            )
+            break
 
     payload = {
         "lane": lane,
         "actions": actions,
-        "iterations": iterations,
+        "iterations": len(decisions),
         "decisions": decisions,
         "workspace": workspace,
     }
