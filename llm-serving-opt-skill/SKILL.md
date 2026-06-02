@@ -19,9 +19,9 @@ It is designed for workloads such as:
 
 This skill complements the sibling modules:
 
-- [e2e-inference-opt-skill](file:///Users/tc/Downloads/推理优化skills/e2e-inference-opt-skill/SKILL.md) for end-to-end inference chains
-- [cuda-kernel-opt-skill](file:///Users/tc/Downloads/推理优化skills/cuda-kernel-opt-skill/SKILL.md) for kernel and operator optimization
-- [auto-profiling](file:///Users/tc/Downloads/推理优化skills/auto-profiling/SKILL.md) as the bounded orchestration entrypoint
+- [e2e-inference-opt-skill](../e2e-inference-opt-skill/SKILL.md) for end-to-end inference chains
+- [cuda-kernel-opt-skill](../cuda-kernel-opt-skill/SKILL.md) for kernel and operator optimization
+- [auto-profiling](../auto-profiling/SKILL.md) as the bounded orchestration entrypoint
 
 This package is the router for service-level LLM inference skills:
 
@@ -122,8 +122,8 @@ Use the narrower sub-skills when the task is already clear:
 | benchmark an SGLang server | [`sglang-benchmark-skill`](skills/sglang-benchmark-skill/SKILL.md) |
 | benchmark across SGLang, vLLM, TensorRT-LLM, Triton, or PyTorch | [`serving-benchmark-skill`](skills/serving-benchmark-skill/SKILL.md) |
 | launch and harden service deployments | [`serving-deployment-skill`](skills/serving-deployment-skill/SKILL.md) |
-| need kernel, NCU, cache, or correctness deep dives | [cuda-kernel-opt-skill](file:///Users/tc/Downloads/推理优化skills/cuda-kernel-opt-skill/SKILL.md) |
-| need E2E small-model or multi-stage chain optimization | [e2e-inference-opt-skill](file:///Users/tc/Downloads/推理优化skills/e2e-inference-opt-skill/SKILL.md) |
+| need kernel, NCU, cache, or correctness deep dives | [cuda-kernel-opt-skill](../cuda-kernel-opt-skill/SKILL.md) |
+| need E2E small-model or multi-stage chain optimization | [e2e-inference-opt-skill](../e2e-inference-opt-skill/SKILL.md) |
 
 ## Module Boundary
 

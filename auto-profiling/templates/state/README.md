@@ -16,5 +16,8 @@ Expected runtime artifacts:
 - `current_contract.md`
 - `evaluator_report.md`
 - `next_handoff.md`
+- `next_candidate.md`
+- `next_candidate.json`
 
+This directory is source template state only. Runtime state is generated under `<target_repo>/.auto-profiling/`.
 The runner creates missing files automatically and keeps them git-friendly.

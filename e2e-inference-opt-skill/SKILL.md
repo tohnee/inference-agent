@@ -38,8 +38,8 @@ Do not use it as the primary module for:
 
 Those belong to:
 
-- [llm-serving-opt-skill](file:///Users/tc/Downloads/推理优化skills/llm-serving-opt-skill/SKILL.md)
-- [cuda-kernel-opt-skill](file:///Users/tc/Downloads/推理优化skills/cuda-kernel-opt-skill/SKILL.md)
+- [llm-serving-opt-skill](../llm-serving-opt-skill/SKILL.md)
+- [cuda-kernel-opt-skill](../cuda-kernel-opt-skill/SKILL.md)
 
 ## First Principle
 

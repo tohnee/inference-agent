@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate scenario-specific aim files for E2E and LLM serving optimization."""
+"""Generate single-aim contracts for E2E, LLM serving, and CUDA/kernel optimization."""
 
 from __future__ import annotations
 
@@ -93,6 +93,45 @@ LLM_BACKEND_PRESETS = {
     },
 }
 
+CUDA_KERNEL_PRESETS = {
+    "cuda": {
+        "optimize_for": "latency",
+        "target_metric_name": "latency_ms",
+        "target_metric_direction": "lower_is_better",
+        "baseline_run_command": "python3 benchmarks/bench_kernel.py --backend cuda --output .auto-profiling/metric.json",
+        "baseline_profile_command": "ncu --set full --target-processes all -o .auto-profiling/ncu_cuda python3 benchmarks/bench_kernel.py --backend cuda",
+        "known_bottlenecks": "global memory bandwidth, occupancy limits, warp divergence, launch overhead",
+        "suspected_safe_lanes": "memory coalescing, block sizing, shared-memory tiling, launch configuration",
+    },
+    "triton": {
+        "optimize_for": "latency",
+        "target_metric_name": "latency_ms",
+        "target_metric_direction": "lower_is_better",
+        "baseline_run_command": "python3 benchmarks/bench_kernel.py --backend triton --output .auto-profiling/metric.json",
+        "baseline_profile_command": "python3 benchmarks/profile_triton.py --trace --output .auto-profiling/profile.json",
+        "known_bottlenecks": "program tiling, memory bandwidth, register pressure, autotune coverage",
+        "suspected_safe_lanes": "tile shape, num_warps, num_stages, vectorized loads",
+    },
+    "cutlass": {
+        "optimize_for": "throughput",
+        "target_metric_name": "throughput_gbps",
+        "target_metric_direction": "higher_is_better",
+        "baseline_run_command": "python3 benchmarks/bench_kernel.py --backend cutlass --output .auto-profiling/metric.json",
+        "baseline_profile_command": "ncu --set full -o .auto-profiling/ncu_cutlass python3 benchmarks/bench_kernel.py --backend cutlass",
+        "known_bottlenecks": "threadblock shape coverage, epilogue fusion, tensor core utilization",
+        "suspected_safe_lanes": "CUTLASS kernel selection, epilogue fusion, alignment and layout",
+    },
+    "operator": {
+        "optimize_for": "latency",
+        "target_metric_name": "latency_ms",
+        "target_metric_direction": "lower_is_better",
+        "baseline_run_command": "python3 benchmarks/bench_operator.py --output .auto-profiling/metric.json",
+        "baseline_profile_command": "python3 benchmarks/profile_operator.py --trace --output .auto-profiling/profile.json",
+        "known_bottlenecks": "operator backend choice, memory traffic, occupancy, launch overhead",
+        "suspected_safe_lanes": "backend synthesis, CPU reference parity, Triton/CUDA scaffold, microbenchmark loop",
+    },
+}
+
 
 def render_template(scenario: str, project_name: str, repo_path: str, preset: dict[str, str]) -> str:
     return "\n".join(
@@ -130,6 +169,7 @@ def render_template(scenario: str, project_name: str, repo_path: str, preset: di
             "- baseline_setup_command: ",
             f"- baseline_run_command: {preset['baseline_run_command']}",
             f"- baseline_profile_command: {preset['baseline_profile_command']}",
+            "- profile_output_path: .auto-profiling/profile.json",
             "- metric_output_path: .auto-profiling/metric.json",
             "- exactness_output_path: .auto-profiling/exactness.json",
             "",
@@ -187,8 +227,8 @@ def render_template(scenario: str, project_name: str, repo_path: str, preset: di
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Generate scenario-specific aim template")
-    parser.add_argument("--mode", choices=["e2e", "llm-serving"], required=True)
-    parser.add_argument("--profile", required=True, help="E2E model family or serving backend")
+    parser.add_argument("--mode", choices=["e2e", "llm-serving", "cuda-kernel"], required=True)
+    parser.add_argument("--profile", required=True, help="E2E model family, serving backend, or CUDA/kernel backend")
     parser.add_argument("--project-name", required=True)
     parser.add_argument("--target-repo-path", required=True)
     parser.add_argument("--output", required=True)
@@ -202,11 +242,16 @@ def main() -> int:
             "baseline_run_command": "python3 tools/run_e2e_infer.py --output .auto-profiling/metric.json",
         }
         scenario = "e2e-inference"
-    else:
+    elif args.mode == "llm-serving":
         if args.profile not in LLM_BACKEND_PRESETS:
             raise SystemExit(f"unsupported llm-serving profile: {args.profile}")
         preset = {**LLM_BACKEND_PRESETS[args.profile], "optimize_for": "latency"}
         scenario = "llm-serving"
+    else:
+        if args.profile not in CUDA_KERNEL_PRESETS:
+            raise SystemExit(f"unsupported cuda-kernel profile: {args.profile}")
+        preset = CUDA_KERNEL_PRESETS[args.profile]
+        scenario = "operator-kernel" if args.profile == "operator" else "cuda-kernel"
 
     content = render_template(
         scenario=scenario,

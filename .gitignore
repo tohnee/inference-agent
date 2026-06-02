@@ -8,10 +8,12 @@ __pycache__/
 # Archives
 *.zip
 
-# Generated runtime state
+# Generated runtime state in target projects
 .auto-profiling/
 **/.auto-profiling/
 
-# Keep the source template shipped with auto-profiling
-!auto-profiling/.auto-profiling/
-!auto-profiling/.auto-profiling/**
+# Keep source templates and examples shipped with auto-profiling
+!auto-profiling/templates/
+!auto-profiling/templates/**
+!auto-profiling/examples/
+!auto-profiling/examples/**

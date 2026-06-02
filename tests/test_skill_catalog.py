@@ -114,11 +114,15 @@ class LlmServingSkillCatalogTests(unittest.TestCase):
         self.assertTrue((root / "reference" / "cutlass" / "cutlass-optim.md").exists())
         self.assertTrue((root / "reference" / "triton" / "triton-optim.md").exists())
 
-    def test_auto_profiling_has_three_scenario_aims(self):
+    def test_auto_profiling_has_single_aim_and_example_presets(self):
         auto_root = ROOT / "auto-profiling"
-        self.assertTrue((auto_root / "aim.e2e.md").exists())
-        self.assertTrue((auto_root / "aim.llm-serving.md").exists())
-        self.assertTrue((auto_root / "aim.cuda-kernel.md").exists())
+        self.assertTrue((auto_root / "aim.md").exists())
+        self.assertTrue((auto_root / "examples" / "aim.e2e.md").exists())
+        self.assertTrue((auto_root / "examples" / "aim.llm-serving.md").exists())
+        self.assertTrue((auto_root / "examples" / "aim.cuda-kernel.md").exists())
+        self.assertTrue((auto_root / "skill_routes.json").exists())
+        self.assertTrue((auto_root / "aim_schema.json").exists())
+        self.assertTrue((auto_root / "templates" / "state" / "README.md").exists())
 
 
 if __name__ == "__main__":

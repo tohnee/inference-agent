@@ -15,42 +15,30 @@ from typing import Any
 from scorer import compare_runs, load_json, write_json
 
 
-DEFAULT_SCENARIO = "e2e-inference"
-SCENARIO_LANES = {
-    "e2e-inference": {
-        "target_module": "e2e-inference-opt-skill",
-        "recommended_skill_route": ["auto-profiling", "e2e-inference-opt-skill"],
-        "recommended_aim_template": "aim.e2e.md",
-    },
-    "llm-serving": {
-        "target_module": "llm-serving-opt-skill",
-        "recommended_skill_route": [
-            "auto-profiling",
-            "llm-serving-opt-skill",
-            "serving-benchmark-skill",
-        ],
-        "recommended_aim_template": "aim.llm-serving.md",
-    },
-    "cuda-kernel": {
-        "target_module": "cuda-kernel-opt-skill",
-        "recommended_skill_route": [
-            "auto-profiling",
-            "cuda-kernel-opt-skill",
-            "cuda-optimized-skill",
-        ],
-        "recommended_aim_template": "aim.cuda-kernel.md",
-    },
-    "operator-kernel": {
-        "target_module": "cuda-kernel-opt-skill",
-        "recommended_skill_route": [
-            "auto-profiling",
-            "cuda-kernel-opt-skill",
-            "operator-backend-synthesis-skill",
-            "cuda-optimized-skill",
-        ],
-        "recommended_aim_template": "aim.cuda-kernel.md",
-    },
-}
+ROUTES_CONFIG_FILE = Path(__file__).resolve().parent / "skill_routes.json"
+AIM_SCHEMA_FILE = Path(__file__).resolve().parent / "aim_schema.json"
+
+
+def load_skill_routes() -> dict[str, Any]:
+    if ROUTES_CONFIG_FILE.exists():
+        return json.loads(ROUTES_CONFIG_FILE.read_text(encoding="utf-8"))
+    return {
+        "default_scenario": "e2e-inference",
+        "scenarios": {
+            "e2e-inference": {
+                "target_module": "e2e-inference-opt-skill",
+                "recommended_skill_route": ["auto-profiling", "e2e-inference-opt-skill"],
+                "recommended_aim_template": "aim.md",
+                "candidate_focus": "Inspect end-to-end latency slices first.",
+            }
+        },
+    }
+
+
+def load_aim_schema() -> dict[str, Any]:
+    if AIM_SCHEMA_FILE.exists():
+        return json.loads(AIM_SCHEMA_FILE.read_text(encoding="utf-8"))
+    return {"required": []}
 
 
 def parse_scalar(value: str) -> Any:
@@ -120,7 +108,7 @@ def repo_root_from_aim(aim: dict[str, Any], aim_path: Path) -> Path:
 
 
 def template_root() -> Path:
-    return Path(__file__).resolve().parent / ".auto-profiling"
+    return Path(__file__).resolve().parent / "templates" / "state"
 
 
 def detect_preferred_shell() -> dict[str, Any]:
@@ -157,9 +145,12 @@ def auto_install_command(project_root: Path) -> str | None:
 
 
 def resolve_scenario_lane(aim: dict[str, Any]) -> dict[str, Any]:
-    raw_scenario = str(aim.get("scenario") or DEFAULT_SCENARIO).strip()
-    scenario = raw_scenario if raw_scenario in SCENARIO_LANES else DEFAULT_SCENARIO
-    lane = dict(SCENARIO_LANES[scenario])
+    routes = load_skill_routes()
+    lanes = routes.get("scenarios", {})
+    default_scenario = str(routes.get("default_scenario") or "e2e-inference")
+    raw_scenario = str(aim.get("scenario") or default_scenario).strip()
+    scenario = raw_scenario if raw_scenario in lanes else default_scenario
+    lane = dict(lanes[scenario])
     lane["scenario"] = scenario
     lane["requested_scenario"] = raw_scenario
     lane["recommended_skill_route_text"] = " -> ".join(lane["recommended_skill_route"])
@@ -291,6 +282,8 @@ def initialize_workspace(project_root: Path) -> dict[str, str]:
         "evaluator_report_md": state_dir / "evaluator_report.md",
         "next_handoff_md": state_dir / "next_handoff.md",
         "skill_route_plan_md": state_dir / "skill_route_plan.md",
+        "next_candidate_md": state_dir / "next_candidate.md",
+        "next_candidate_json": state_dir / "next_candidate.json",
     }
 
     template_dir = template_root()
@@ -314,6 +307,8 @@ def initialize_workspace(project_root: Path) -> dict[str, str]:
         "evaluator_report_md": "# Evaluator Report\n\n## Latest Decision\n\n- no evaluation yet\n",
         "next_handoff_md": "# Next Handoff\n\n## Resume Here\n\n- initialize baseline and capture trusted metrics\n",
         "skill_route_plan_md": "# Skill Route Plan\n\n## Current Scenario\n\n- not resolved yet\n",
+        "next_candidate_md": "# Next Candidate Plan\n\n- no candidate planned yet\n",
+        "next_candidate_json": "{}\n",
     }
 
     for key, target in files.items():
@@ -509,6 +504,114 @@ def command_retry_count_from_aim(aim: dict[str, Any]) -> int:
     except (TypeError, ValueError):
         return 1
     return max(1, value)
+
+
+def validate_aim(aim: dict[str, Any]) -> None:
+    schema = load_aim_schema()
+    errors: list[str] = []
+    required = schema.get("required", [])
+    properties = schema.get("properties", {})
+    for key in required:
+        value = aim.get(key)
+        if value is None or value == "" or value == []:
+            errors.append(f"missing required aim field: {key}")
+            continue
+        spec = properties.get(key, {})
+        expected_type = spec.get("type")
+        if expected_type == "array" and not isinstance(value, list):
+            errors.append(f"aim field must be a list: {key}")
+        if expected_type == "string" and not isinstance(value, str):
+            errors.append(f"aim field must be a string: {key}")
+        enum = spec.get("enum")
+        if enum and value not in enum:
+            errors.append(f"aim field {key} must be one of: {', '.join(enum)}")
+        min_items = spec.get("minItems")
+        if min_items is not None and isinstance(value, list) and len(value) < int(min_items):
+            errors.append(f"aim field must include at least {min_items} item(s): {key}")
+        min_length = spec.get("minLength")
+        if min_length is not None and isinstance(value, str) and len(value.strip()) < int(min_length):
+            errors.append(f"aim field must not be empty: {key}")
+    if errors:
+        hint = "Edit auto-profiling/aim.md or run bootstrap_aim.py to generate a complete contract."
+        raise ValueError("invalid aim.md:\n- " + "\n- ".join(errors) + "\n" + hint)
+
+
+def safe_read_text(path: Path, max_chars: int = 4000) -> str | None:
+    try:
+        if path.exists() and path.is_file():
+            return path.read_text(encoding="utf-8", errors="replace")[:max_chars]
+    except OSError:
+        return None
+    return None
+
+
+def resolve_artifact_path(raw_path: Any, project_root: Path) -> Path | None:
+    if not raw_path:
+        return None
+    path = Path(str(raw_path))
+    if not path.is_absolute():
+        path = project_root / path
+    return path
+
+
+def plan_next_candidate(
+    aim: dict[str, Any],
+    project_root: Path,
+    workspace: dict[str, str],
+    reference: dict[str, Any],
+    iteration_label: str,
+) -> dict[str, Any]:
+    lane = resolve_scenario_lane(aim)
+    metric_path = resolve_artifact_path(aim.get("metric_output_path"), project_root)
+    profile_path = resolve_artifact_path(aim.get("profile_output_path") or aim.get("baseline_profile_output_path"), project_root)
+    exactness_path = resolve_artifact_path(aim.get("exactness_output_path"), project_root)
+    profile_summary = safe_read_text(profile_path) if profile_path else None
+    metric_summary = safe_read_text(metric_path) if metric_path else None
+    exactness_summary = safe_read_text(exactness_path) if exactness_path else None
+    suspected_safe_lanes = aim.get("suspected_safe_lanes") or lane.get("candidate_focus")
+    known_bottlenecks = aim.get("known_bottlenecks") or "use profile evidence before changing code"
+    plan = {
+        "label": iteration_label,
+        "scenario": lane["scenario"],
+        "target_module": lane["target_module"],
+        "recommended_skill_route": lane["recommended_skill_route"],
+        "candidate_focus": lane.get("candidate_focus"),
+        "known_bottlenecks": known_bottlenecks,
+        "suspected_safe_lanes": suspected_safe_lanes,
+        "reference_experiment": reference.get("label"),
+        "reference_metrics": reference.get("metrics", {}),
+        "artifact_inputs": {
+            "metric_output_path": str(metric_path) if metric_path else None,
+            "profile_output_path": str(profile_path) if profile_path else None,
+            "exactness_output_path": str(exactness_path) if exactness_path else None,
+        },
+        "artifact_previews": {
+            "metrics": metric_summary,
+            "profile": profile_summary,
+            "exactness": exactness_summary,
+        },
+        "next_experiment_rule": "Make exactly one bounded change inside allowed_mutations, run exactness first, then keep only with metric evidence.",
+    }
+    lines = [
+        "# Next Candidate Plan",
+        "",
+        f"- label: {iteration_label}",
+        f"- scenario: {lane['scenario']}",
+        f"- target_module: {lane['target_module']}",
+        f"- recommended_skill_route: {lane['recommended_skill_route_text']}",
+        f"- reference_experiment: {reference.get('label')}",
+        f"- reference_metrics: {json.dumps(reference.get('metrics', {}), ensure_ascii=False)}",
+        f"- known_bottlenecks: {known_bottlenecks}",
+        f"- suspected_safe_lanes: {suspected_safe_lanes}",
+        f"- candidate_focus: {lane.get('candidate_focus')}",
+        "",
+        "## Rule",
+        "",
+        f"- {plan['next_experiment_rule']}",
+    ]
+    Path(workspace["next_candidate_md"]).write_text("\n".join(lines) + "\n", encoding="utf-8")
+    write_json(workspace["next_candidate_json"], plan)
+    return plan
 
 
 def write_skill_route_plan(workspace: dict[str, str], lane: dict[str, Any]) -> None:
@@ -778,6 +881,7 @@ def update_state(
 def prepare_context(aim_file: str) -> tuple[dict[str, Any], Path, dict[str, str]]:
     aim_path = Path(aim_file).resolve()
     aim = read_aim(aim_path)
+    validate_aim(aim)
     project_root = repo_root_from_aim(aim, aim_path)
     ensure_git_repo(project_root, bool(aim.get("git_required", False)))
     workspace = apply_workspace_overrides(initialize_workspace(project_root), aim, project_root)
@@ -802,8 +906,10 @@ def execute_candidate(
     promote: bool,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     reference = select_reference(workspace)
+    candidate_plan = plan_next_candidate(aim, project_root, workspace, reference, label)
     write_contract_doc(workspace, aim, label, "candidate")
     record = run_contract(aim, project_root, phase="candidate", label=label)
+    record["candidate_plan"] = candidate_plan
     decision = compare_runs(
         reference,
         record,
@@ -950,6 +1056,7 @@ def handle_status(args: argparse.Namespace) -> int:
         "best": best,
         "state": state,
         "workspace": workspace,
+        "next_candidate": load_json(workspace.get("next_candidate_json", "")),
     }
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
