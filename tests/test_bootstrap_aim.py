@@ -64,6 +64,34 @@ class BootstrapAimTests(unittest.TestCase):
             self.assertIn("--backend vllm", text)
             self.assertIn("- target_metric_name: tpot_ms", text)
 
+    def test_generate_cuda_triton_template(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "aim.triton.md"
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--mode",
+                    "cuda-kernel",
+                    "--profile",
+                    "triton",
+                    "--project-name",
+                    "demo-kernel",
+                    "--target-repo-path",
+                    "/tmp/kernel",
+                    "--output",
+                    str(out),
+                ],
+                check=True,
+                text=True,
+                capture_output=True,
+            )
+            text = out.read_text(encoding="utf-8")
+            self.assertIn("- scenario: cuda-kernel", text)
+            self.assertIn("--backend triton", text)
+            self.assertIn("- target_metric_name: latency_ms", text)
+            self.assertIn("memory bandwidth", text)
+
 
 if __name__ == "__main__":
     unittest.main()

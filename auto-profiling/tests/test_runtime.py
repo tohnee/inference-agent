@@ -13,7 +13,9 @@ from runner import (
     detect_package_manager,
     detect_preferred_shell,
     initialize_workspace,
+    load_skill_routes,
     parse_aim_markdown,
+    validate_aim,
 )
 from scorer import compare_runs
 
@@ -45,6 +47,21 @@ class AimParserTests(unittest.TestCase):
         self.assertEqual(data["blocked_by_default"], ["quantization"])
 
 
+class AimSchemaTests(unittest.TestCase):
+    def test_validate_aim_rejects_missing_required_fields(self):
+        with self.assertRaises(ValueError) as ctx:
+            validate_aim({"scenario": "llm-serving"})
+        self.assertIn("baseline_run_command", str(ctx.exception))
+
+    def test_skill_routes_loaded_from_config(self):
+        routes = load_skill_routes()
+        self.assertIn("llm-serving", routes["scenarios"])
+        self.assertEqual(
+            routes["scenarios"]["cuda-kernel"]["target_module"],
+            "cuda-kernel-opt-skill",
+        )
+
+
 class WorkspaceInitTests(unittest.TestCase):
     def test_initialize_workspace_creates_runtime_artifacts(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -64,6 +81,8 @@ class WorkspaceInitTests(unittest.TestCase):
                 "current_contract_md",
                 "evaluator_report_md",
                 "next_handoff_md",
+                "next_candidate_md",
+                "next_candidate_json",
             }
             self.assertTrue(expected.issubset(paths.keys()))
             for key in expected:
@@ -228,6 +247,16 @@ class WorkspaceInitTests(unittest.TestCase):
                 "- recommended_skill_route: auto-profiling -> llm-serving-opt-skill -> serving-benchmark-skill",
                 next_handoff,
             )
+            subprocess.run(
+                [sys.executable, str(runtime_root / "runner.py"), "candidate", "--aim", str(aim_path), "--label", "exp-001"],
+                cwd=runtime_root,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            next_candidate = (repo / ".auto-profiling" / "next_candidate.md").read_text(encoding="utf-8")
+            self.assertIn("- label: exp-001", next_candidate)
+            self.assertIn("- target_module: llm-serving-opt-skill", next_candidate)
 
 
 class EnvironmentDetectionTests(unittest.TestCase):

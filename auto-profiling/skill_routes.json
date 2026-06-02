@@ -1,0 +1,29 @@
+{
+  "default_scenario": "e2e-inference",
+  "scenarios": {
+    "e2e-inference": {
+      "target_module": "e2e-inference-opt-skill",
+      "recommended_skill_route": ["auto-profiling", "e2e-inference-opt-skill"],
+      "recommended_aim_template": "aim.md",
+      "candidate_focus": "Inspect end-to-end latency slices, then optimize the largest pipeline stage without changing model outputs."
+    },
+    "llm-serving": {
+      "target_module": "llm-serving-opt-skill",
+      "recommended_skill_route": ["auto-profiling", "llm-serving-opt-skill", "serving-benchmark-skill"],
+      "recommended_aim_template": "aim.md",
+      "candidate_focus": "Inspect TTFT, TPOT, ITL, queueing, scheduler, and KV-cache evidence before changing serving policy."
+    },
+    "cuda-kernel": {
+      "target_module": "cuda-kernel-opt-skill",
+      "recommended_skill_route": ["auto-profiling", "cuda-kernel-opt-skill", "cuda-optimized-skill"],
+      "recommended_aim_template": "aim.md",
+      "candidate_focus": "Inspect NCU/kernel benchmark evidence, then optimize memory traffic, occupancy, launch overhead, or backend selection."
+    },
+    "operator-kernel": {
+      "target_module": "cuda-kernel-opt-skill",
+      "recommended_skill_route": ["auto-profiling", "cuda-kernel-opt-skill", "operator-backend-synthesis-skill", "cuda-optimized-skill"],
+      "recommended_aim_template": "aim.md",
+      "candidate_focus": "Synthesize or refine an operator backend only after CPU/reference exactness is locked."
+    }
+  }
+}

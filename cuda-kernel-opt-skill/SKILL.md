@@ -19,9 +19,9 @@ It is the right module when the bottleneck has already been narrowed to:
 
 This module complements:
 
-- [e2e-inference-opt-skill](file:///Users/tc/Downloads/推理优化skills/e2e-inference-opt-skill/SKILL.md) for end-to-end non-LLM chains
-- [llm-serving-opt-skill](file:///Users/tc/Downloads/推理优化skills/llm-serving-opt-skill/SKILL.md) for LLM serving systems
-- [auto-profiling](file:///Users/tc/Downloads/推理优化skills/auto-profiling/SKILL.md) for bounded experiment orchestration
+- [e2e-inference-opt-skill](../e2e-inference-opt-skill/SKILL.md) for end-to-end non-LLM chains
+- [llm-serving-opt-skill](../llm-serving-opt-skill/SKILL.md) for LLM serving systems
+- [auto-profiling](../auto-profiling/SKILL.md) for bounded experiment orchestration
 
 ## Scope
 
@@ -50,6 +50,7 @@ Use this module for:
 
 When `auto-profiling` is used for kernel-level optimization, this module is the primary knowledge source.
 
-Recommended aim template:
+Recommended user entry point:
 
-- [aim.cuda-kernel.md](file:///Users/tc/Downloads/推理优化skills/auto-profiling/aim.cuda-kernel.md)
+- `auto-profiling/aim.md` generated with `bootstrap_aim.py --mode cuda-kernel`
+- example preset: `auto-profiling/examples/aim.cuda-kernel.md`

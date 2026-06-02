@@ -34,6 +34,7 @@ Edit this file only for **LLM serving optimization**.
 - baseline_setup_command:
 - baseline_run_command:
 - baseline_profile_command:
+- profile_output_path:
 - metric_output_path:
 - exactness_output_path:
 
