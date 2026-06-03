@@ -113,3 +113,10 @@ python3 runner.py status --aim aim.md
 ## 正确性原则
 
 默认是 **exact-parity**：只要输出不一致，优化就失败。只有用户在 `aim.md` 中显式启用 bounded tolerance，并说明等价性和容忍范围，runtime 才允许有限数值误差。
+
+## 生产化执行护栏
+
+- `max_runtime_per_experiment` 会作为 install / warmup / baseline / exactness / profile 命令的默认超时，避免外部 benchmark 或 profiler 无限挂起。
+- 如需给命令执行设置更严格的上限，可以在 `aim.md` 中添加 `command_timeout_seconds`；该字段优先于 `max_runtime_per_experiment`。
+- 超时命令会以 `exit_code: 124`、`timed_out: true` 写入命令结果，并在 required command 路径抛出明确的 timeout 错误。
+- 最新生产化 review 和后续硬化清单见 `docs/plans/2026-06-03-production-readiness-review.md`。

@@ -19,6 +19,8 @@ from runner import (
     initialize_workspace,
     load_skill_routes,
     parse_aim_markdown,
+    run_required,
+    shell_result,
     validate_aim,
 )
 from scorer import compare_runs
@@ -382,6 +384,29 @@ class ScoringTests(unittest.TestCase):
         )
         self.assertTrue(result["keep"])
         self.assertEqual(result["candidate_exactness"]["mode"], "bounded-tolerance")
+
+
+class CommandGuardTests(unittest.TestCase):
+    def test_shell_result_reports_timeout_without_hanging(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = shell_result(
+                f"{sys.executable} -c \"import time; time.sleep(2)\"",
+                cwd=Path(tmp),
+                timeout_seconds=1,
+            )
+        self.assertEqual(result["exit_code"], 124)
+        self.assertTrue(result["timed_out"])
+        self.assertIn("timed out", result["stderr"])
+
+    def test_run_required_raises_timeout_specific_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(RuntimeError) as ctx:
+                run_required(
+                    f"{sys.executable} -c \"import time; time.sleep(2)\"",
+                    cwd=Path(tmp),
+                    timeout_seconds=1,
+                )
+        self.assertIn("command timed out", str(ctx.exception))
 
 
 class HarnessCommandTests(unittest.TestCase):

@@ -16,16 +16,78 @@
     "blocked_by_default"
   ],
   "properties": {
-    "scenario": {"type": "string", "enum": ["e2e-inference", "llm-serving", "cuda-kernel", "operator-kernel"]},
-    "target_repo_path": {"type": "string", "minLength": 1},
-    "baseline_run_command": {"type": "string", "minLength": 1},
-    "baseline_profile_command": {"type": "string", "minLength": 1},
-    "metric_output_path": {"type": "string", "minLength": 1},
-    "exactness_output_path": {"type": "string", "minLength": 1},
-    "exactness_check_command": {"type": "string", "minLength": 1},
-    "target_metric_name": {"type": "string", "minLength": 1},
-    "target_metric_direction": {"type": "string", "enum": ["lower_is_better", "higher_is_better"]},
-    "allowed_mutations": {"type": "array", "minItems": 1, "items": {"type": "string"}},
-    "blocked_by_default": {"type": "array", "minItems": 1, "items": {"type": "string"}}
+    "scenario": {
+      "type": "string",
+      "enum": [
+        "e2e-inference",
+        "llm-serving",
+        "cuda-kernel",
+        "operator-kernel"
+      ]
+    },
+    "target_repo_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "baseline_run_command": {
+      "type": "string",
+      "minLength": 1
+    },
+    "baseline_profile_command": {
+      "type": "string",
+      "minLength": 1
+    },
+    "metric_output_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "exactness_output_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "exactness_check_command": {
+      "type": "string",
+      "minLength": 1
+    },
+    "target_metric_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "target_metric_direction": {
+      "type": "string",
+      "enum": [
+        "lower_is_better",
+        "higher_is_better"
+      ]
+    },
+    "allowed_mutations": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string"
+      }
+    },
+    "blocked_by_default": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string"
+      }
+    },
+    "max_runtime_per_experiment": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Default timeout in seconds for runtime-managed external commands."
+    },
+    "command_timeout_seconds": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Optional per-command timeout override; takes precedence over max_runtime_per_experiment."
+    },
+    "command_retry_count": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Number of attempts for required runtime commands."
+    }
   }
 }

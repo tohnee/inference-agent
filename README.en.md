@@ -68,3 +68,10 @@ python3 runner.py status --aim aim.md
 - `auto-profiling/templates/state/` is the source template shipped by this repository.
 - `<target_repo>/.auto-profiling/` is generated runtime state for a target project.
 - `docs/archive/` contains historical notes and is not part of the normal user workflow.
+
+## Production execution guardrails
+
+- `max_runtime_per_experiment` is used as the default timeout for install, warmup, baseline, exactness, and profile commands so external tools cannot hang a session forever.
+- Add `command_timeout_seconds` to `aim.md` when a stricter per-command timeout is needed; it takes precedence over `max_runtime_per_experiment`.
+- Timed-out commands are reported with `exit_code: 124`, `timed_out: true`, and a timeout-specific required-command error.
+- See `docs/plans/2026-06-03-production-readiness-review.md` for the current hardening review and follow-up checklist.
