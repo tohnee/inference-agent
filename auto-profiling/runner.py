@@ -318,18 +318,34 @@ def initialize_workspace(project_root: Path) -> dict[str, str]:
     return {"state_dir": str(state_dir), **{key: str(value) for key, value in files.items()}}
 
 
-def shell_result(command: str, cwd: Path, prefix: str | None = None) -> dict[str, Any]:
+def normalize_process_output(value: str | bytes | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
+
+
+def shell_result(
+    command: str,
+    cwd: Path,
+    prefix: str | None = None,
+    timeout_seconds: int | None = None,
+) -> dict[str, Any]:
     shell = detect_preferred_shell()
     if not command:
+        timestamp = utc_now()
         return {
             "command": command,
             "cwd": str(cwd),
             "exit_code": 0,
             "stdout": "",
             "stderr": "",
-            "started_at": utc_now(),
-            "finished_at": utc_now(),
+            "started_at": timestamp,
+            "finished_at": timestamp,
             "shell": shell,
+            "timed_out": False,
+            "timeout_seconds": timeout_seconds,
         }
     full_command = command if not prefix else f"{prefix} && {command}"
     started_at = utc_now()
@@ -339,10 +355,32 @@ def shell_result(command: str, cwd: Path, prefix: str | None = None) -> dict[str
         "shell": True,
         "text": True,
         "capture_output": True,
+        "timeout": timeout_seconds,
     }
     if shell["path"]:
         run_kwargs["executable"] = shell["path"]
-    completed = subprocess.run(**run_kwargs)
+    try:
+        completed = subprocess.run(**run_kwargs)
+    except subprocess.TimeoutExpired as exc:
+        finished_at = utc_now()
+        stderr = normalize_process_output(exc.stderr)
+        timeout_message = f"command timed out after {timeout_seconds} second(s)"
+        if stderr:
+            stderr = f"{stderr}\n{timeout_message}"
+        else:
+            stderr = timeout_message
+        return {
+            "command": full_command,
+            "cwd": str(cwd),
+            "exit_code": 124,
+            "stdout": normalize_process_output(exc.stdout),
+            "stderr": stderr,
+            "started_at": started_at,
+            "finished_at": finished_at,
+            "shell": shell,
+            "timed_out": True,
+            "timeout_seconds": timeout_seconds,
+        }
     finished_at = utc_now()
     return {
         "command": full_command,
@@ -353,15 +391,23 @@ def shell_result(command: str, cwd: Path, prefix: str | None = None) -> dict[str
         "started_at": started_at,
         "finished_at": finished_at,
         "shell": shell,
+        "timed_out": False,
+        "timeout_seconds": timeout_seconds,
     }
 
 
 
-def run_required(command: str, cwd: Path, prefix: str | None = None) -> dict[str, Any]:
-    result = shell_result(command, cwd=cwd, prefix=prefix)
+def run_required(
+    command: str,
+    cwd: Path,
+    prefix: str | None = None,
+    timeout_seconds: int | None = None,
+) -> dict[str, Any]:
+    result = shell_result(command, cwd=cwd, prefix=prefix, timeout_seconds=timeout_seconds)
     if result["exit_code"] != 0:
+        failure_kind = "command timed out" if result.get("timed_out") else "command failed"
         raise RuntimeError(
-            f"command failed: {result['command']}\n{result['stderr'] or result['stdout']}"
+            f"{failure_kind}: {result['command']}\n{result['stderr'] or result['stdout']}"
         )
     return result
 
@@ -371,12 +417,13 @@ def run_required_with_retry(
     cwd: Path,
     prefix: str | None = None,
     retry_count: int = 1,
+    timeout_seconds: int | None = None,
 ) -> dict[str, Any]:
     attempts = max(1, retry_count)
     last_error: RuntimeError | None = None
     for attempt in range(1, attempts + 1):
         try:
-            return run_required(command, cwd=cwd, prefix=prefix)
+            return run_required(command, cwd=cwd, prefix=prefix, timeout_seconds=timeout_seconds)
         except RuntimeError as exc:
             last_error = exc
             if attempt == attempts:
@@ -527,6 +574,17 @@ def command_retry_count_from_aim(aim: dict[str, Any]) -> int:
     return max(1, value)
 
 
+def command_timeout_seconds_from_aim(aim: dict[str, Any]) -> int | None:
+    raw = aim.get("command_timeout_seconds", aim.get("max_runtime_per_experiment"))
+    if raw in (None, ""):
+        return None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
 def validate_aim(aim: dict[str, Any]) -> None:
     schema = load_aim_schema()
     errors: list[str] = []
@@ -669,6 +727,7 @@ def run_contract(
     environment = detect_runtime_environment(project_root)
     lane = resolve_scenario_lane(aim)
     retry_count = command_retry_count_from_aim(aim)
+    timeout_seconds = command_timeout_seconds_from_aim(aim)
     commands = []
     command_specs = [
         ("install_command", resolve_install_command(aim, project_root)),
@@ -688,6 +747,7 @@ def run_contract(
                         cwd=project_root,
                         prefix=prefix,
                         retry_count=retry_count,
+                        timeout_seconds=timeout_seconds,
                     ),
                 }
             )
