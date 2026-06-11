@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -170,6 +171,8 @@ def main() -> int:
     parser.add_argument("--n", type=int, default={spec.n})
     parser.add_argument("--k", type=int, default={spec.k})
     parser.add_argument("--seed", type=int, default=2026)
+    parser.add_argument("--warmup", type=int, default=5)
+    parser.add_argument("--repeat", type=int, default=20)
     args = parser.parse_args()
 
     if not torch.cuda.is_available():
@@ -186,14 +189,27 @@ def main() -> int:
         from kernel_cuda import op_cuda as backend_fn
 
     backend_inputs = to_cuda(cpu_inputs)
+    # Warmup absorbs JIT/extension compilation and context init so the timed
+    # iterations measure steady-state kernel latency.
+    for _ in range(max(args.warmup, 1)):
+        backend_out = backend_fn(*backend_inputs)
     torch.cuda.synchronize()
-    start = time.perf_counter()
-    backend_out = backend_fn(*backend_inputs)
-    torch.cuda.synchronize()
-    latency_ms = (time.perf_counter() - start) * 1000
+
+    samples_ms = []
+    for _ in range(max(args.repeat, 1)):
+        start = time.perf_counter()
+        backend_fn(*backend_inputs)
+        torch.cuda.synchronize()
+        samples_ms.append((time.perf_counter() - start) * 1000)
+    samples_ms.sort()
+    latency_ms = samples_ms[len(samples_ms) // 2] if len(samples_ms) % 2 else (
+        samples_ms[len(samples_ms) // 2 - 1] + samples_ms[len(samples_ms) // 2]
+    ) / 2
 
     backend_cpu = backend_out.detach().cpu()
-    passed = torch.allclose(ref, backend_cpu, atol=1e-4, rtol=1e-4)
+    close_mask = torch.isclose(ref, backend_cpu, atol=1e-4, rtol=1e-4)
+    passed = bool(close_mask.all())
+    mismatch_count = int((~close_mask).sum().item())
     max_abs_error = float((ref - backend_cpu).abs().max().item())
     max_rel_error = float(((ref - backend_cpu).abs() / (ref.abs() + 1e-12)).max().item())
 
@@ -205,19 +221,17 @@ def main() -> int:
         json.dumps(
             {{
                 "exactness": {{
-                    "passed": bool(passed),
-                    "mismatch_count": 0 if passed else 1,
+                    "passed": passed,
+                    "mismatch_count": mismatch_count,
                     "max_abs_error": max_abs_error,
                     "max_rel_error": max_rel_error,
-                    "logic_equivalent": True,
-                    "algorithm_equivalent": True,
                 }}
             }},
             indent=2,
         ),
         encoding="utf-8",
     )
-    print(json.dumps({{"backend": args.backend, "latency_ms": latency_ms, "passed": bool(passed)}}))
+    print(json.dumps({{"backend": args.backend, "latency_ms": latency_ms, "passed": passed}}))
     return 0
 
 
@@ -242,6 +256,13 @@ def main() -> int:
     parser.add_argument("--k", type=int, default=1024)
     parser.add_argument("--output-dir", required=True)
     args = parser.parse_args()
+
+    # The name is interpolated into generated Python/C++ sources and used as a
+    # directory name, so restrict it to a safe identifier.
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", args.name):
+        parser.error(
+            f"--name must be a valid identifier ([A-Za-z_][A-Za-z0-9_]*), got '{args.name}'"
+        )
 
     spec = OperatorSpec(
         name=args.name,

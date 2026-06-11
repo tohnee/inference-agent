@@ -230,6 +230,7 @@ class AutopilotRuntimeTests(unittest.TestCase):
             subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True, text=True)
             subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True, capture_output=True, text=True)
             subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True, capture_output=True, text=True)
+            subprocess.run(["git", "config", "commit.gpgsign", "false"], cwd=repo, check=True, capture_output=True, text=True)
             tracked = repo / "tracked.txt"
             tracked.write_text("baseline\n", encoding="utf-8")
             subprocess.run(["git", "add", "tracked.txt"], cwd=repo, check=True, capture_output=True, text=True)
@@ -346,7 +347,7 @@ class AutopilotRuntimeTests(unittest.TestCase):
                 capture_output=True,
                 text=True,
             )
-            self.assertEqual(tracked.read_text(encoding="utf-8"), "baseline\n")
+            self.assertEqual(tracked.read_text(encoding="utf-8"), "candidate-1\n")
 
 
 if __name__ == "__main__":

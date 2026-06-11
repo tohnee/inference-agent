@@ -6,13 +6,14 @@ import json
 import os
 import platform
 import shutil
+import signal
 import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from scorer import compare_runs, load_json, write_json
+from scorer import compare_runs, evaluate_exactness, load_json, write_json
 
 
 ROUTES_CONFIG_FILE = Path(__file__).resolve().parent / "skill_routes.json"
@@ -80,13 +81,15 @@ def parse_aim_markdown(text: str) -> dict[str, Any]:
             key = key.strip()
             value = value.strip()
             if value == "":
-                data[key] = []
+                # A blank value means "unset" until indented items follow.
+                # Storing [] here would make scalar fields falsy and silently
+                # flip boolean gates such as require_logic_equivalence.
                 current_list_key = key
             else:
                 data[key] = parse_scalar(value)
             continue
         if line.startswith("  - ") and current_list_key:
-            data[current_list_key].append(parse_scalar(line[4:].strip()))
+            data.setdefault(current_list_key, []).append(parse_scalar(line[4:].strip()))
     return data
 
 
@@ -349,21 +352,33 @@ def shell_result(
         }
     full_command = command if not prefix else f"{prefix} && {command}"
     started_at = utc_now()
-    run_kwargs = {
-        "args": full_command,
+    popen_kwargs: dict[str, Any] = {
         "cwd": str(cwd),
         "shell": True,
         "text": True,
-        "capture_output": True,
-        "timeout": timeout_seconds,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        # Run in its own session so a timeout can kill the entire process
+        # group, not just the shell — benchmark/server children must not
+        # outlive the timeout and keep holding the GPU.
+        "start_new_session": True,
     }
     if shell["path"]:
-        run_kwargs["executable"] = shell["path"]
+        popen_kwargs["executable"] = shell["path"]
+    process = subprocess.Popen(full_command, **popen_kwargs)
     try:
-        completed = subprocess.run(**run_kwargs)
-    except subprocess.TimeoutExpired as exc:
+        stdout, stderr = process.communicate(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        if hasattr(os, "killpg"):
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                process.kill()
+        else:
+            process.kill()
+        stdout, stderr = process.communicate()
         finished_at = utc_now()
-        stderr = normalize_process_output(exc.stderr)
+        stderr = normalize_process_output(stderr)
         timeout_message = f"command timed out after {timeout_seconds} second(s)"
         if stderr:
             stderr = f"{stderr}\n{timeout_message}"
@@ -373,7 +388,7 @@ def shell_result(
             "command": full_command,
             "cwd": str(cwd),
             "exit_code": 124,
-            "stdout": normalize_process_output(exc.stdout),
+            "stdout": normalize_process_output(stdout),
             "stderr": stderr,
             "started_at": started_at,
             "finished_at": finished_at,
@@ -385,9 +400,9 @@ def shell_result(
     return {
         "command": full_command,
         "cwd": str(cwd),
-        "exit_code": completed.returncode,
-        "stdout": completed.stdout,
-        "stderr": completed.stderr,
+        "exit_code": process.returncode,
+        "stdout": normalize_process_output(stdout),
+        "stderr": normalize_process_output(stderr),
         "started_at": started_at,
         "finished_at": finished_at,
         "shell": shell,
@@ -456,13 +471,35 @@ def load_exactness_payload(path: Path) -> dict[str, Any]:
     return payload
 
 
+def resolve_output_artifacts(aim: dict[str, Any], project_root: Path) -> dict[str, Path]:
+    paths = {}
+    for key in ("metric_output_path", "exactness_output_path"):
+        path = Path(str(aim[key]))
+        if not path.is_absolute():
+            path = project_root / path
+        paths[key] = path
+    return paths
+
+
+def clear_output_artifacts(aim: dict[str, Any], project_root: Path) -> None:
+    # Remove leftovers from previous runs so a command that exits 0 without
+    # writing its artifact cannot pass stale evidence off as fresh results.
+    for path in resolve_output_artifacts(aim, project_root).values():
+        path.unlink(missing_ok=True)
+
+
 def collect_candidate_payload(aim: dict[str, Any], project_root: Path) -> dict[str, Any]:
-    metric_output_path = Path(str(aim["metric_output_path"]))
-    exactness_output_path = Path(str(aim["exactness_output_path"]))
-    if not metric_output_path.is_absolute():
-        metric_output_path = project_root / metric_output_path
-    if not exactness_output_path.is_absolute():
-        exactness_output_path = project_root / exactness_output_path
+    artifacts = resolve_output_artifacts(aim, project_root)
+    metric_output_path = artifacts["metric_output_path"]
+    exactness_output_path = artifacts["exactness_output_path"]
+    if not metric_output_path.exists():
+        raise RuntimeError(
+            f"metric output was not written by the contract commands: {metric_output_path}"
+        )
+    if not exactness_output_path.exists():
+        raise RuntimeError(
+            f"exactness output was not written by the contract commands: {exactness_output_path}"
+        )
     metric_payload = load_metric_payload(metric_output_path)
     exactness_payload = load_exactness_payload(exactness_output_path)
     return {"metrics": metric_payload["metrics"], "exactness": exactness_payload}
@@ -488,7 +525,11 @@ def git_revision(project_root: Path) -> str | None:
 
 
 def load_state(path: str | Path) -> dict[str, Any]:
-    payload = load_json(path)
+    try:
+        payload = load_json(path)
+    except (json.JSONDecodeError, OSError) as exc:
+        print(f"Warning: session state unreadable ({exc}); starting fresh", file=sys.stderr)
+        payload = {}
     if payload:
         return payload
     return {
@@ -522,12 +563,67 @@ def require_revert_on_failure_from_aim(aim: dict[str, Any]) -> bool:
     return bool(aim.get("require_revert_on_failure", False))
 
 
-def revert_failed_candidate_if_required(aim: dict[str, Any], project_root: Path) -> dict[str, Any] | None:
+def git_commit_current_state(project_root: Path, message: str) -> dict[str, Any]:
+    """Stage and commit the worktree so keep snapshots survive later reverts.
+    Uses explicit author env so the commit works even without host git config."""
+    import os as _os
+
+    author_env = {
+        "GIT_AUTHOR_NAME": "auto-profiling",
+        "GIT_AUTHOR_EMAIL": "auto-profiling@localhost",
+        "GIT_COMMITTER_NAME": "auto-profiling",
+        "GIT_COMMITTER_EMAIL": "auto-profiling@localhost",
+    }
+    full_env = {**_os.environ, **author_env}
+
+    _git = lambda args: subprocess.run(
+        f"git {args}",
+        cwd=str(project_root),
+        shell=True,
+        capture_output=True,
+        text=True,
+        env=full_env,
+    )
+
+    _git("add -A")
+    completed = _git(f'commit -m "{message}" --allow-empty')
+    return {
+        "command": f'git commit -m "{message}" --allow-empty',
+        "cwd": str(project_root),
+        "exit_code": completed.returncode,
+        "stdout": completed.stdout,
+        "stderr": completed.stderr,
+        "started_at": "",
+        "finished_at": "",
+        "shell": {"name": "sh", "path": "/bin/sh"},
+        "timed_out": False,
+        "timeout_seconds": None,
+    }
+
+
+def _best_commit_ref(workspace: dict[str, str]) -> str | None:
+    best = load_json(workspace["best_result_json"])
+    if best and best.get("git_revision"):
+        return str(best["git_revision"])
+    return None
+
+
+def revert_failed_candidate_if_required(
+    aim: dict[str, Any],
+    project_root: Path,
+    workspace: dict[str, str],
+) -> dict[str, Any] | None:
     if not require_revert_on_failure_from_aim(aim):
         return None
     if not bool(aim.get("git_required", False)):
         return None
-    return shell_result("git restore --source=HEAD --staged --worktree .", cwd=project_root)
+    # Restore to the best commit so previously-kept candidate code is preserved.
+    # Fall back to HEAD when no best commit exists (e.g. baseline never committed).
+    target_ref = _best_commit_ref(workspace) or "HEAD"
+    return shell_result(
+        f"git restore --source={target_ref} --staged --worktree .",
+        cwd=project_root,
+    )
 
 
 def apply_workspace_overrides(
@@ -737,6 +833,7 @@ def run_contract(
         ("exactness_check_command", aim.get("exactness_check_command")),
         ("baseline_profile_command", aim.get("baseline_profile_command")),
     ]
+    clear_output_artifacts(aim, project_root)
     for key, command in command_specs:
         if command:
             commands.append(
@@ -964,6 +1061,8 @@ def prepare_context(aim_file: str) -> tuple[dict[str, Any], Path, dict[str, str]
     aim = read_aim(aim_path)
     validate_aim(aim)
     project_root = repo_root_from_aim(aim, aim_path)
+    if not project_root.is_dir():
+        raise RuntimeError(f"target_repo_path does not exist: {project_root}")
     ensure_git_repo(project_root, bool(aim.get("git_required", False)))
     workspace = apply_workspace_overrides(initialize_workspace(project_root), aim, project_root)
     return aim, project_root, workspace
@@ -989,34 +1088,69 @@ def execute_candidate(
     reference = select_reference(workspace)
     candidate_plan = plan_next_candidate(aim, project_root, workspace, reference, label)
     write_contract_doc(workspace, aim, label, "candidate")
-    record = run_contract(aim, project_root, phase="candidate", label=label)
-    record["candidate_plan"] = candidate_plan
-    decision = compare_runs(
-        reference,
-        record,
-        metric_name=str(aim["target_metric_name"]),
-        metric_direction=str(aim["target_metric_direction"]),
-        exactness_policy=exactness_policy_from_aim(aim),
-    )
-    log_session_artifacts(workspace, record, decision)
-    if promote and decision["keep"]:
-        promoted = {**record, "decision": decision}
-        write_json(workspace["best_result_json"], promoted)
+    try:
+        record = run_contract(aim, project_root, phase="candidate", label=label)
+        record["candidate_plan"] = candidate_plan
+        decision = compare_runs(
+            reference,
+            record,
+            metric_name=str(aim["target_metric_name"]),
+            metric_direction=str(aim["target_metric_direction"]),
+            exactness_policy=exactness_policy_from_aim(aim),
+        )
+    except Exception as exc:
+        # A crashed contract (failed command, missing metric, timeout) must
+        # still count as a failed candidate: revert if required and record the
+        # failure so require_revert_on_failure and stop thresholds apply.
+        revert_result = revert_failed_candidate_if_required(aim, project_root, workspace)
+        if revert_result and revert_result["exit_code"] == 0:
+            revert_note = "worktree reverted; "
+        elif revert_result:
+            revert_note = f"revert FAILED (exit {revert_result['exit_code']}); "
+        else:
+            revert_note = ""
+        state = update_state(
+            workspace,
+            status="candidate_errored",
+            last_experiment=label,
+            best_experiment=None,
+            keep=False,
+            next_action=f"candidate '{label}' errored; {revert_note}fix the contract commands and rerun",
+        )
+        write_handoff(workspace, state, reference, resolve_scenario_lane(aim), None)
+        raise RuntimeError(f"candidate '{label}' failed: {exc}") from exc
     revert_result = None
     if not decision["keep"]:
-        revert_result = revert_failed_candidate_if_required(aim, project_root)
+        revert_result = revert_failed_candidate_if_required(aim, project_root, workspace)
         if revert_result:
             decision["revert"] = {
                 "attempted": True,
                 "exit_code": revert_result["exit_code"],
                 "command": revert_result["command"],
             }
+    # Log after the revert so the durable jsonl record includes its outcome.
+    log_session_artifacts(workspace, record, decision)
+    if promote and decision["keep"]:
+        promoted = {**record, "decision": decision}
+        write_json(workspace["best_result_json"], promoted)
+        if bool(aim.get("git_required", False)):
+            commit_msg = f"auto-profiling: keep {label} ({decision.get('metric_name','metric')}={decision.get('candidate_value','?')})"
+            git_commit_current_state(project_root, commit_msg)
+            commit_rev = git_revision(project_root)
+            if commit_rev:
+                promoted["git_revision"] = commit_rev
+                write_json(workspace["best_result_json"], promoted)
     write_evaluator_report(workspace, reference, record, decision)
     best = load_json(workspace["best_result_json"])
     if decision["keep"]:
         next_action = "propose next bounded experiment"
-    elif revert_result:
+    elif revert_result and revert_result["exit_code"] == 0:
         next_action = "candidate reverted; adjust bounded experiment and rerun"
+    elif revert_result:
+        next_action = (
+            "candidate revert FAILED "
+            f"(exit {revert_result['exit_code']}); restore the worktree manually before rerunning"
+        )
     else:
         next_action = "revert or adjust candidate and rerun"
     state = update_state(
@@ -1078,6 +1212,11 @@ def handle_baseline(args: argparse.Namespace) -> int:
     write_contract_doc(workspace, aim, args.label or "baseline", "baseline")
     record = run_contract(aim, project_root, phase="baseline", label=args.label or "baseline")
     policy = exactness_policy_from_aim(aim)
+    # Evaluate exactness directly: compare_runs(record, record) raises before
+    # ever returning when the baseline fails, hiding the friendly error below.
+    baseline_exactness = evaluate_exactness(record, policy)
+    if not baseline_exactness.get("passed", False):
+        raise RuntimeError("baseline exactness check failed; baseline cannot be trusted")
     baseline_decision = {
         "metric_name": str(aim["target_metric_name"]),
         "metric_direction": str(aim["target_metric_direction"]),
@@ -1085,27 +1224,20 @@ def handle_baseline(args: argparse.Namespace) -> int:
         "candidate_value": record["metrics"].get(str(aim["target_metric_name"])),
         "improvement": 0.0,
         "relative_improvement": 0.0,
-        "baseline_exactness": compare_runs(
-            record,
-            record,
-            metric_name=str(aim["target_metric_name"]),
-            metric_direction=str(aim["target_metric_direction"]),
-            exactness_policy=policy,
-        )["baseline_exactness"],
-        "candidate_exactness": compare_runs(
-            record,
-            record,
-            metric_name=str(aim["target_metric_name"]),
-            metric_direction=str(aim["target_metric_direction"]),
-            exactness_policy=policy,
-        )["candidate_exactness"],
+        "baseline_exactness": baseline_exactness,
+        "candidate_exactness": baseline_exactness,
         "keep": True,
         "rejection_reason": None,
     }
-    if not baseline_decision["baseline_exactness"].get("passed", False):
-        raise RuntimeError("baseline exactness check failed; baseline cannot be trusted")
     write_json(workspace["baseline_snapshot_json"], record)
     write_json(workspace["best_result_json"], record)
+    if bool(aim.get("git_required", False)):
+        commit_msg = f"auto-profiling: baseline {record.get('label','baseline')} established"
+        git_commit_current_state(project_root, commit_msg)
+        commit_rev = git_revision(project_root)
+        if commit_rev:
+            record["git_revision"] = commit_rev
+            write_json(workspace["best_result_json"], record)
     log_session_artifacts(workspace, record)
     write_evaluator_report(workspace, record, record, baseline_decision)
     state = update_state(
@@ -1222,23 +1354,32 @@ def handle_autopilot(args: argparse.Namespace) -> int:
     lane = resolve_scenario_lane(aim)
     write_skill_route_plan(workspace, lane)
 
+    resumed_state = load_state(workspace["session_state_json"])
+    if resumed_state.get("status") == "stopped_after_failures":
+        # A rerun after a stop is a fresh attempt; without this reset the very
+        # first failure would immediately re-trip the threshold.
+        resumed_state["consecutive_failures"] = 0
+        resumed_state["status"] = "resumed_after_failures"
+        write_json(workspace["session_state_json"], resumed_state)
+
     baseline = load_json(workspace["baseline_snapshot_json"])
     actions: list[dict[str, Any]] = []
     if not baseline:
         baseline_label = args.baseline_label or "baseline"
         baseline_record = run_contract(aim, project_root, phase="baseline", label=baseline_label)
         policy = exactness_policy_from_aim(aim)
-        baseline_exactness = compare_runs(
-            baseline_record,
-            baseline_record,
-            metric_name=str(aim["target_metric_name"]),
-            metric_direction=str(aim["target_metric_direction"]),
-            exactness_policy=policy,
-        )["baseline_exactness"]
+        baseline_exactness = evaluate_exactness(baseline_record, policy)
         if not baseline_exactness.get("passed", False):
             raise RuntimeError("baseline exactness check failed; autopilot cannot continue")
         write_json(workspace["baseline_snapshot_json"], baseline_record)
         write_json(workspace["best_result_json"], baseline_record)
+        if bool(aim.get("git_required", False)):
+            commit_msg = f"auto-profiling: baseline {baseline_label} established"
+            git_commit_current_state(project_root, commit_msg)
+            commit_rev = git_revision(project_root)
+            if commit_rev:
+                baseline_record["git_revision"] = commit_rev
+                write_json(workspace["best_result_json"], baseline_record)
         log_session_artifacts(workspace, baseline_record)
         state = update_state(
             workspace,
@@ -1258,11 +1399,20 @@ def handle_autopilot(args: argparse.Namespace) -> int:
     decisions: list[dict[str, Any]] = []
     for idx in range(iterations):
         label = f"{args.label_prefix}-{idx + 1:03d}"
-        _record, decision, state = execute_candidate(aim, project_root, workspace, label, promote=True)
-        decisions.append({"label": label, "keep": decision["keep"], "improvement": decision["improvement"]})
+        try:
+            _record, decision, state = execute_candidate(aim, project_root, workspace, label, promote=True)
+        except RuntimeError as exc:
+            # execute_candidate already reverted (when required) and recorded
+            # the failure in session state; treat it like a rejected candidate.
+            print(f"candidate '{label}' errored: {exc}", file=sys.stderr)
+            state = load_state(workspace["session_state_json"])
+            decision = None
+            decisions.append({"label": label, "keep": False, "improvement": None, "error": str(exc)})
+        else:
+            decisions.append({"label": label, "keep": decision["keep"], "improvement": decision["improvement"]})
         if (
             stop_after_failures
-            and not decision["keep"]
+            and (decision is None or not decision["keep"])
             and int(state.get("consecutive_failures", 0)) >= stop_after_failures
         ):
             state = update_state(

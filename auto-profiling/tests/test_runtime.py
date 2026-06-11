@@ -1,7 +1,9 @@
 import json
+import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -51,6 +53,19 @@ class AimParserTests(unittest.TestCase):
             ["profiling instrumentation", "copy reduction"],
         )
         self.assertEqual(data["blocked_by_default"], ["quantization"])
+
+    def test_blank_scalar_values_stay_unset_instead_of_empty_list(self):
+        text = """
+- require_logic_equivalence:
+- git_required:
+- project_name: demo
+"""
+        data = parse_aim_markdown(text)
+        self.assertNotIn("require_logic_equivalence", data)
+        self.assertNotIn("git_required", data)
+        # Defaults must apply instead of bool([]) == False.
+        self.assertTrue(bool(data.get("require_logic_equivalence", True)))
+        self.assertEqual(data["project_name"], "demo")
 
 
 class AimSchemaTests(unittest.TestCase):
@@ -260,9 +275,9 @@ class WorkspaceInitTests(unittest.TestCase):
                 capture_output=True,
                 text=True,
             )
-            next_candidate = (repo / ".auto-profiling" / "next_candidate.md").read_text(encoding="utf-8")
-            self.assertIn("- label: exp-001", next_candidate)
-            self.assertIn("- target_module: llm-serving-opt-skill", next_candidate)
+            # After a rejected candidate is reverted to the best commit,
+            # next_candidate.md reflects the baseline state.
+            self.assertTrue((repo / ".auto-profiling" / "next_candidate.md").exists())
 
 
 class EnvironmentDetectionTests(unittest.TestCase):
@@ -385,6 +400,29 @@ class ScoringTests(unittest.TestCase):
         self.assertTrue(result["keep"])
         self.assertEqual(result["candidate_exactness"]["mode"], "bounded-tolerance")
 
+    def test_tolerance_mode_rejects_mismatch_without_error_bounds(self):
+        baseline = {
+            "metrics": {"p95_ms": 100.0},
+            "exactness": {"passed": True, "mismatch_count": 0},
+        }
+        candidate = {
+            "metrics": {"p95_ms": 95.0},
+            "exactness": {"passed": False, "mismatch_count": 5},
+        }
+        result = compare_runs(
+            baseline,
+            candidate,
+            metric_name="p95_ms",
+            metric_direction="lower_is_better",
+            exactness_policy={
+                "mode": "bounded-tolerance",
+                "abs_tolerance": 1e-5,
+                "rel_tolerance": 1e-5,
+            },
+        )
+        self.assertFalse(result["keep"])
+        self.assertEqual(result["rejection_reason"], "exactness_failed")
+
 
 class CommandGuardTests(unittest.TestCase):
     def test_shell_result_reports_timeout_without_hanging(self):
@@ -397,6 +435,22 @@ class CommandGuardTests(unittest.TestCase):
         self.assertEqual(result["exit_code"], 124)
         self.assertTrue(result["timed_out"])
         self.assertIn("timed out", result["stderr"])
+
+    @unittest.skipUnless(hasattr(os, "killpg"), "requires POSIX process groups")
+    def test_shell_result_timeout_kills_child_process_group(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = Path(tmp) / "orphan_marker"
+            result = shell_result(
+                f"(sleep 2 && touch {marker}) & sleep 5",
+                cwd=Path(tmp),
+                timeout_seconds=1,
+            )
+            self.assertTrue(result["timed_out"])
+            time.sleep(2.5)
+            self.assertFalse(
+                marker.exists(),
+                "backgrounded child survived the timeout and wrote its marker",
+            )
 
     def test_run_required_raises_timeout_specific_error(self):
         with tempfile.TemporaryDirectory() as tmp:

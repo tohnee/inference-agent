@@ -75,13 +75,19 @@ def write_text(path: Path, content: str) -> None:
 def read_json(path: Path, default: Any) -> Any:
     if not path.exists():
         return default
-    return json.loads(path.read_text(encoding="utf-8"))
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        print(f"Warning: ignoring unreadable JSON at {path}: {exc}", file=sys.stderr)
+        return default
 
 
 
 def write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, path)
 
 
 
@@ -90,7 +96,12 @@ def valid_report_exists(path: Path) -> bool:
 
 
 
-def run_command(cmd: list[str], stdout_path: Path, stderr_path: Path) -> subprocess.CompletedProcess:
+def run_command(
+    cmd: list[str],
+    stdout_path: Path,
+    stderr_path: Path,
+    timeout: float | None = None,
+) -> subprocess.CompletedProcess:
     try:
         result = subprocess.run(
             cmd,
@@ -98,6 +109,13 @@ def run_command(cmd: list[str], stdout_path: Path, stderr_path: Path) -> subproc
             text=True,
             encoding="utf-8",
             errors="ignore",
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout if isinstance(exc.stdout, str) else ""
+        stderr = exc.stderr if isinstance(exc.stderr, str) else ""
+        result = subprocess.CompletedProcess(
+            cmd, 124, stdout, stderr + f"\ncommand timed out after {timeout}s"
         )
     except OSError as exc:
         result = subprocess.CompletedProcess(cmd, 127, "", str(exc))
@@ -638,7 +656,11 @@ def classify_strategy_outcome(record: dict[str, Any], previous_record: dict[str,
 
     current_median = get_kernel_median_ms(record)
     if previous_record is None:
-        return ("positive", "baseline_seed")
+        if record.get("iteration") == 0:
+            return ("positive", "baseline_seed")
+        # An iteration gap (crash or explicit --iteration) is not evidence of
+        # improvement; don't credit the strategy without a comparison point.
+        return ("rejected", "no_previous_record")
     if current_median is None:
         return ("rejected", "no_current_median")
 
@@ -847,7 +869,9 @@ def load_manifest(manifest_path: Path, args: argparse.Namespace, run_dir: Path, 
 def pick_iteration_index(manifest: dict[str, Any], requested_iteration: int) -> int:
     if requested_iteration >= 0:
         return requested_iteration
-    return len(manifest.get("iterations", []))
+    existing = [int(item.get("iteration", -1)) for item in manifest.get("iterations", [])]
+    # max+1 (not len) so explicit --iteration gaps never collide with the next default.
+    return max(existing, default=-1) + 1
 
 
 
@@ -926,8 +950,8 @@ def import_ncu_report(args: argparse.Namespace, rep_path: Path, summary_txt: Pat
     summary_cmd = [args.ncu_bin, "--import", str(rep_path), "--print-summary", "per-kernel"]
     details_cmd = [args.ncu_bin, "--import", str(rep_path), "--page", "details"]
 
-    summary_res = run_command(summary_cmd, summary_txt, summary_txt.with_suffix(".stderr.txt"))
-    details_res = run_command(details_cmd, details_txt, details_txt.with_suffix(".stderr.txt"))
+    summary_res = run_command(summary_cmd, summary_txt, summary_txt.with_suffix(".stderr.txt"), timeout=args.command_timeout)
+    details_res = run_command(details_cmd, details_txt, details_txt.with_suffix(".stderr.txt"), timeout=args.command_timeout)
 
     return {
         "summary_command": shell_join(summary_cmd),
@@ -946,6 +970,8 @@ def choose_best_iteration(iterations: list[dict[str, Any]]) -> dict[str, Any] | 
         bench = item.get("benchmark_result") or {}
         kernel = bench.get("kernel") or {}
         correctness = bench.get("correctness") or {}
+        if item.get("benchmark_rc") not in (None, 0):
+            continue
         ncu_required = item.get("ncu_expected", False)
         if ncu_required and not item.get("full_report_exists"):
             continue
@@ -1202,9 +1228,17 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
     parser.add_argument("--nvcc-bin", type=str, default="nvcc", help="NVCC executable or full path")
     parser.add_argument("--ncu-bin", type=str, default="ncu", help="Nsight Compute executable")
     parser.add_argument("--kernel-name-regex", type=str, default="", help="Optional NCU kernel filter regex")
+    parser.add_argument(
+        "--command-timeout",
+        type=float,
+        default=3600.0,
+        help="Per-command timeout in seconds for benchmark/NCU subprocesses; 0 disables (default: 3600)",
+    )
     parser.add_argument("--preflight-only", action="store_true", help="Only run environment checks and exit")
 
     args, unknown = parser.parse_known_args()
+    if args.command_timeout is not None and args.command_timeout <= 0:
+        args.command_timeout = None
     args.dim_args = [item for item in unknown if item.startswith("--") and "=" in item]
     return args, unknown
 
@@ -1296,8 +1330,11 @@ def main() -> int:
     benchmark_json = iter_dir / "benchmark_result.json"
     benchmark_stdout = iter_dir / "benchmark.stdout.txt"
     benchmark_stderr = iter_dir / "benchmark.stderr.txt"
+    # A stale JSON from a previous run of this iter_dir must never be read as
+    # this run's result when the benchmark fails before writing its output.
+    benchmark_json.unlink(missing_ok=True)
     bench_cmd = build_benchmark_cmd(args, benchmark_script, snapshot_file, benchmark_json, backend)
-    bench_res = run_command(bench_cmd, benchmark_stdout, benchmark_stderr)
+    bench_res = run_command(bench_cmd, benchmark_stdout, benchmark_stderr, timeout=args.command_timeout)
     bench_json = read_json(benchmark_json, {})
 
     record: dict[str, Any] = {
@@ -1327,11 +1364,16 @@ def main() -> int:
     correctness_failed = bool(bench_json.get("has_reference")) and correctness.get("passed") is False
 
     if bench_res.returncode == 0 and not correctness_failed and backend_supports_ncu(backend):
+        # The NCU runs re-execute the benchmark under profiler replay; give them
+        # a separate --json-out so they cannot overwrite the clean timings above.
+        ncu_bench_cmd = build_benchmark_cmd(
+            args, benchmark_script, snapshot_file, iter_dir / "ncu_benchmark_result.json", backend
+        )
         targeted_prefix = iter_dir / "targeted"
         targeted_stdout = iter_dir / "targeted_ncu.stdout.txt"
         targeted_stderr = iter_dir / "targeted_ncu.stderr.txt"
-        targeted_cmd = build_targeted_ncu_cmd(args, bench_cmd, targeted_prefix)
-        targeted_res = run_command(targeted_cmd, targeted_stdout, targeted_stderr)
+        targeted_cmd = build_targeted_ncu_cmd(args, ncu_bench_cmd, targeted_prefix)
+        targeted_res = run_command(targeted_cmd, targeted_stdout, targeted_stderr, timeout=args.command_timeout)
         targeted_rep = targeted_prefix.with_suffix(".ncu-rep")
         record["targeted_ncu_command"] = shell_join(targeted_cmd)
         record["targeted_ncu_stdout"] = str(targeted_stdout)
@@ -1350,8 +1392,8 @@ def main() -> int:
         full_prefix = iter_dir / "full"
         full_stdout = iter_dir / "full_ncu.stdout.txt"
         full_stderr = iter_dir / "full_ncu.stderr.txt"
-        full_cmd = build_full_ncu_cmd(args, bench_cmd, full_prefix)
-        full_res = run_command(full_cmd, full_stdout, full_stderr)
+        full_cmd = build_full_ncu_cmd(args, ncu_bench_cmd, full_prefix)
+        full_res = run_command(full_cmd, full_stdout, full_stderr, timeout=args.command_timeout)
         full_rep = full_prefix.with_suffix(".ncu-rep")
         record["full_ncu_command"] = shell_join(full_cmd)
         record["full_ncu_stdout"] = str(full_stdout)

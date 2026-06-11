@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -10,10 +11,15 @@ def load_json(path: str | Path) -> dict[str, Any]:
 
 
 def write_json(path: str | Path, payload: dict[str, Any]) -> None:
-    Path(path).write_text(
+    # Write-then-rename so a crash mid-write cannot leave truncated JSON in
+    # the resumable session state files.
+    target = Path(path)
+    tmp = target.with_name(target.name + ".tmp")
+    tmp.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+    os.replace(tmp, target)
 
 
 def _metric_value(payload: dict[str, Any], metric_name: str) -> float:
@@ -64,6 +70,7 @@ def evaluate_exactness(
     require_algorithm_equivalence = bool(policy.get("require_algorithm_equivalence", True))
     logic_equivalent = bool(exactness.get("logic_equivalent", True))
     algorithm_equivalent = bool(exactness.get("algorithm_equivalent", True))
+    has_error_bounds = "max_abs_error" in exactness or "max_rel_error" in exactness
     max_abs_error = float(exactness.get("max_abs_error", 0.0))
     max_rel_error = float(exactness.get("max_rel_error", 0.0))
 
@@ -75,6 +82,10 @@ def evaluate_exactness(
     if max_abs_error > abs_tolerance:
         passed = False
     if max_rel_error > rel_tolerance:
+        passed = False
+    if not has_error_bounds and (base["mismatch_count"] > 0 or not base["passed"]):
+        # The checker reported a failure but no error magnitudes; without
+        # measured bounds there is no basis to accept under tolerance.
         passed = False
 
     return {

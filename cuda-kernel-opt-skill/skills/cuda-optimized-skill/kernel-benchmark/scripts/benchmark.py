@@ -23,6 +23,7 @@ import sys
 import json
 import copy
 import glob
+import statistics
 import subprocess
 import ctypes
 import argparse
@@ -65,7 +66,19 @@ DTYPE_MAP = {
     "unsigned int*": getattr(torch, "uint32", torch.int32),
 }
 
-INT_TYPES = {"int", "long", "size_t", "unsigned int"}
+DEFAULT_ATOL = 1e-4
+DEFAULT_RTOL = 1e-3
+
+INT_TYPES = {
+    "int",
+    "long",
+    "size_t",
+    "unsigned int",
+    "unsigned short",
+    "unsigned char",
+    "char",
+    "short",
+}
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -77,7 +90,9 @@ def parse_solve_signature(cu_file: str):
     with open(cu_file, "r", encoding="utf-8") as f:
         content = f.read()
 
-    pattern = r'extern\s+"C"\s+void\s+solve\s*\(([\s\S]*?)\)\s*\{'
+    # Restrict the parameter capture to paren-free text so a preceding
+    # prototype declaration (`... solve(...);`) cannot swallow the definition.
+    pattern = r'extern\s+"C"\s+void\s+solve\s*\(([^()]*)\)\s*\{'
     match = re.search(pattern, content)
     if not match:
         raise ValueError(f'Cannot find \'extern "C" void solve(...)\' in {cu_file}')
@@ -92,12 +107,15 @@ def parse_solve_signature(cu_file: str):
         token = token.strip()
         if not token:
             continue
-        is_const = "const" in token
-        token_clean = re.sub(r"\s+", " ", token.replace("const", "").strip())
+        is_const = re.search(r"\bconst\b", token) is not None
+        token_clean = re.sub(r"\s+", " ", re.sub(r"\bconst\b", "", token).strip())
         matched = False
         for key in sorted(SUPPORTED_TYPES.keys(), key=len, reverse=True):
             base = key.replace("*", r"\s*\*")
-            m = re.match(rf"({base})\s+(\w+)", token_clean)
+            # Pointer types: `\s*` so the common `float *name` style parses.
+            # Scalar types: keep `\s+` so `intx` is not read as `int x`.
+            sep = r"\s*" if "*" in key else r"\s+"
+            m = re.fullmatch(rf"({base}){sep}(\w+)", token_clean)
             if m:
                 params.append((key, m.group(2), is_const))
                 matched = True
@@ -259,24 +277,41 @@ def clone_value(value):
 
 
 
+_PTR_ELEMS_CAP = 256 * 1024 * 1024
+
+
 def _determine_ptr_elems(int_values: list, ptr_size_override: int) -> int:
     """Calculate number of elements for pointer buffers from dimension values."""
     if ptr_size_override > 0:
-        ptr_elems = ptr_size_override
-    elif len(int_values) == 0:
+        return ptr_size_override
+    if len(int_values) == 0:
         ptr_elems = 1024 * 1024
     elif len(int_values) == 1:
         ptr_elems = int_values[0]
     else:
         sv = sorted(int_values, reverse=True)
         ptr_elems = sv[0] * sv[1]
-    return min(ptr_elems, 256 * 1024 * 1024)
+    if ptr_elems > _PTR_ELEMS_CAP:
+        # Silently clamping would hand the kernel dims larger than the
+        # allocated buffers and cause out-of-bounds GPU accesses.
+        raise ValueError(
+            f"Inferred buffer size ({ptr_elems} elems) exceeds the safety cap "
+            f"({_PTR_ELEMS_CAP}). Pass --ptr-size explicitly to allocate buffers "
+            "matching your dimensions."
+        )
+    return ptr_elems
 
 
 
 def _fmt_vals(vals, width=10):
     """Format a list of numeric values for compact display."""
     return "[" + ", ".join(f"{v:>{width}.4f}" for v in vals) + "]"
+
+
+
+def _preview_vals(tensor, count):
+    """First `count` elements of a tensor as a flat python list (any rank)."""
+    return tensor.flatten()[:count].float().cpu().tolist()
 
 
 
@@ -319,7 +354,7 @@ def _time_iterations(fn, warmup: int, repeat: int) -> list[float]:
 
 def _stats(times_ms: list):
     avg = sum(times_ms) / len(times_ms)
-    med = sorted(times_ms)[len(times_ms) // 2]
+    med = statistics.median(times_ms)
     return avg, med, min(times_ms), max(times_ms)
 
 
@@ -405,16 +440,18 @@ def _validate_outputs(kernel_tensors, ref_tensors, output_params, atol, rtol):
         print(f"         mean rel  = {rel_err:.6e}")
 
         if not match:
-            diff_mask = ~torch.isclose(kt, rt, atol=atol, rtol=rtol)
+            kt_flat = kt.flatten()
+            rt_flat = rt.flatten()
+            diff_mask = ~torch.isclose(kt_flat, rt_flat, atol=atol, rtol=rtol)
             bad_idx = diff_mask.nonzero(as_tuple=True)[0]
             n_bad = bad_idx.numel()
             print(f"         mismatches: {n_bad} / {kt.numel()}")
             if n_bad > 0:
                 idx = bad_idx[0].item()
-                print(f"         first bad   @ idx={idx}:  kernel={kt[idx].item():.6f}  ref={rt[idx].item():.6f}")
+                print(f"         first bad   @ flat idx={idx}:  kernel={kt_flat[idx].item():.6f}  ref={rt_flat[idx].item():.6f}")
 
-        k_preview = kernel_tensors[pname][:PREVIEW].float().cpu().tolist()
-        r_preview = ref_tensors[pname][:PREVIEW].float().cpu().tolist()
+        k_preview = _preview_vals(kernel_tensors[pname], PREVIEW)
+        r_preview = _preview_vals(ref_tensors[pname], PREVIEW)
         print(f"         kernel[:{PREVIEW}] = {_fmt_vals(k_preview)}")
         print(f"         ref   [:{PREVIEW}] = {_fmt_vals(r_preview)}")
         print()
@@ -620,14 +657,17 @@ def run(solution_file, ref_file, dim_values, warmup, repeat, ptr_size_override, 
     has_ref = bool(ref_file)
 
     ref_fn = None
-    _atol = atol
-    _rtol = rtol
+    # Precedence: explicit CLI flag > ref module attribute > default.
+    _atol = atol if atol is not None else DEFAULT_ATOL
+    _rtol = rtol if rtol is not None else DEFAULT_RTOL
 
     if has_ref:
         ref_mod = load_reference(ref_file)
         ref_fn = ref_mod.reference
-        _atol = float(getattr(ref_mod, "atol", atol))
-        _rtol = float(getattr(ref_mod, "rtol", rtol))
+        if atol is None:
+            _atol = float(getattr(ref_mod, "atol", DEFAULT_ATOL))
+        if rtol is None:
+            _rtol = float(getattr(ref_mod, "rtol", DEFAULT_RTOL))
         print(f"[reference] {ref_file}  (atol={_atol}, rtol={_rtol})\n")
 
     gpu_index = torch.cuda.current_device()
@@ -697,13 +737,18 @@ def run(solution_file, ref_file, dim_values, warmup, repeat, ptr_size_override, 
             name: tensor for name, tensor in ref_inputs.items() if isinstance(tensor, torch.Tensor) and name in kernel_outputs
         }
 
-        validation_passed = _validate_outputs(
-            kernel_outputs,
-            ref_outputs,
-            state["output_specs"],
-            _atol,
-            _rtol,
-        )
+        if state["output_specs"]:
+            validation_passed = _validate_outputs(
+                kernel_outputs,
+                ref_outputs,
+                state["output_specs"],
+                _atol,
+                _rtol,
+            )
+        else:
+            # No tensors were compared, so this run must not be reported as
+            # verified ("ALL PASS") to downstream consumers of correctness.passed.
+            validation_passed = None
 
         print("=" * 60)
         print(f"  Target     : {os.path.basename(solution_file)}")
@@ -715,12 +760,15 @@ def run(solution_file, ref_file, dim_values, warmup, repeat, ptr_size_override, 
         print(f"  Buf/ptr    : {state['ptr_elems']} elems")
         print(f"  Tolerance  : atol={_atol}  rtol={_rtol}")
         print("-" * 60)
-        result_str = "ALL PASS" if validation_passed else "FAILED"
-        print(f"  Result     : {_color(result_str, validation_passed)}")
+        if validation_passed is None:
+            result_str = "SKIPPED (no output tensors)"
+        else:
+            result_str = "ALL PASS" if validation_passed else "FAILED"
+        print(f"  Result     : {_color(result_str, bool(validation_passed))}")
         print("=" * 60)
 
         result["correctness"]["passed"] = validation_passed
-        if not validation_passed:
+        if validation_passed is False:
             _write_json_out(json_out, result)
             sys.exit(1)
 
@@ -738,7 +786,7 @@ def run(solution_file, ref_file, dim_values, warmup, repeat, ptr_size_override, 
         print(f"\n[preview] first {preview} elements before kernel call:")
         for item in state["preview_tensors"]:
             tag = "IN " if item["role"] == "input" else "OUT"
-            print(f"  {tag} {item['name']:>6s} = {_fmt_vals(item['tensor'][:preview].float().cpu().tolist())}")
+            print(f"  {tag} {item['name']:>6s} = {_fmt_vals(_preview_vals(item['tensor'], preview))}")
 
         state["callable"]()
         torch.cuda.synchronize()
@@ -746,7 +794,7 @@ def run(solution_file, ref_file, dim_values, warmup, repeat, ptr_size_override, 
         print(f"\n[preview] first {preview} elements after 1 kernel call:")
         for item in state["preview_tensors"]:
             tag = "IN " if item["role"] == "input" else "OUT"
-            print(f"  {tag} {item['name']:>6s} = {_fmt_vals(item['tensor'][:preview].float().cpu().tolist())}")
+            print(f"  {tag} {item['name']:>6s} = {_fmt_vals(_preview_vals(item['tensor'], preview))}")
 
     print(f"\n[warmup] kernel  {warmup} iterations ...")
     times_kernel = _time_iterations(state["callable"], warmup, repeat)
@@ -832,22 +880,33 @@ def main():
     parser.add_argument("--ptr-size", type=int, default=0, help="Override element count for all CUDA/CUTLASS pointer buffers")
     parser.add_argument("--arch", type=str, default="", help="GPU arch, e.g. sm_90 (auto-detected if omitted)")
     parser.add_argument("--gpu", type=int, default=0, help="GPU device index (default: 0)")
-    parser.add_argument("--atol", type=float, default=1e-4, help="Absolute tolerance for validation (default: 1e-4)")
-    parser.add_argument("--rtol", type=float, default=1e-3, help="Relative tolerance for validation (default: 1e-3)")
+    parser.add_argument("--atol", type=float, default=None, help="Absolute tolerance for validation (default: 1e-4; overrides ref module when given)")
+    parser.add_argument("--rtol", type=float, default=None, help="Relative tolerance for validation (default: 1e-3; overrides ref module when given)")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for input tensors when validating (default: 42)")
     parser.add_argument("--json-out", type=str, default="", help="Optional path to write structured benchmark results as JSON")
     parser.add_argument("--nvcc-bin", type=str, default="nvcc", help="NVCC executable or full path")
 
     args, unknown = parser.parse_known_args()
 
+    if args.repeat < 1:
+        parser.error(f"--repeat must be >= 1 (got {args.repeat})")
+    if args.warmup < 0:
+        parser.error(f"--warmup must be >= 0 (got {args.warmup})")
+
     dim_values = {}
     for item in unknown:
         if item.startswith("--") and "=" in item:
             key, val = item[2:].split("=", 1)
-            dim_values[key] = int(val)
+            try:
+                dim_values[key] = int(val)
+            except ValueError:
+                parser.error(f"Dimension arg --{key} must be an integer (got '{val}')")
         else:
             print(f"Warning: ignoring unknown arg '{item}'", file=sys.stderr)
 
+    if not torch.cuda.is_available():
+        print("Error: no CUDA device available (torch.cuda.is_available() is False).", file=sys.stderr)
+        sys.exit(1)
     torch.cuda.set_device(args.gpu)
     arch = args.arch if args.arch else detect_arch(args.gpu)
 
