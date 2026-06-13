@@ -53,11 +53,23 @@ Run the loop:
 ```bash
 cd auto-profiling
 python3 runner.py init --aim aim.md
+python3 runner.py doctor --aim aim.md
 python3 runner.py collect-env --aim aim.md
 python3 runner.py baseline --aim aim.md
 python3 runner.py autopilot --aim aim.md --iterations 3
 python3 runner.py status --aim aim.md
 ```
+
+## User-facing preflight
+
+Before running expensive benchmark/profile commands, run:
+
+```bash
+cd auto-profiling
+python3 runner.py doctor --aim aim.md
+```
+
+`doctor` writes `<target_repo>/.auto-profiling/doctor_report.md` and `doctor_report.json`. It checks aim completeness, target repository access, git/revert safety, required commands, metric/exactness contracts, output artifact paths, and mutation scope. It returns 0 by default for interactive review; add `--strict` in CI when failing checks should produce a non-zero exit.
 
 ## Stable aim API
 
