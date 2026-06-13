@@ -18,6 +18,7 @@ from runner import (
     detect_runtime_environment,
     detect_package_manager,
     detect_preferred_shell,
+    git_commit_current_state,
     initialize_workspace,
     load_skill_routes,
     parse_aim_markdown,
@@ -66,6 +67,13 @@ class AimParserTests(unittest.TestCase):
         # Defaults must apply instead of bool([]) == False.
         self.assertTrue(bool(data.get("require_logic_equivalence", True)))
         self.assertEqual(data["project_name"], "demo")
+
+    def test_key_seen_as_scalar_then_list_does_not_crash(self):
+        # A malformed document that repeats a key first as a scalar then as a
+        # list header must not raise AttributeError on str.append.
+        text = "- foo: scalarval\n- foo:\n  - item1\n  - item2\n"
+        data = parse_aim_markdown(text)
+        self.assertEqual(data["foo"], ["item1", "item2"])
 
 
 class AimSchemaTests(unittest.TestCase):
@@ -422,6 +430,37 @@ class ScoringTests(unittest.TestCase):
         )
         self.assertFalse(result["keep"])
         self.assertEqual(result["rejection_reason"], "exactness_failed")
+
+
+class GitCommitTests(unittest.TestCase):
+    def _init_repo(self, repo: Path) -> None:
+        for cmd in (
+            ["git", "init"],
+            ["git", "config", "user.email", "a@b.c"],
+            ["git", "config", "user.name", "tester"],
+            ["git", "config", "commit.gpgsign", "false"],
+        ):
+            subprocess.run(cmd, cwd=repo, check=True, capture_output=True, text=True)
+
+    def test_commit_message_with_shell_metachars_is_not_injected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            self._init_repo(repo)
+            (repo / "f.txt").write_text("x", encoding="utf-8")
+            sentinel = repo / "PWNED"
+            evil = 'exp"; touch PWNED; echo "'
+            result = git_commit_current_state(repo, f"keep {evil}")
+            self.assertEqual(result["exit_code"], 0, result)
+            # Injected `touch PWNED` must never have executed.
+            self.assertFalse(sentinel.exists(), "shell injection executed")
+            subject = subprocess.run(
+                ["git", "log", "-1", "--pretty=%s"],
+                cwd=repo,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            self.assertIn(evil, subject)
 
 
 class CommandGuardTests(unittest.TestCase):

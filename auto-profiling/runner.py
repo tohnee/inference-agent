@@ -89,7 +89,14 @@ def parse_aim_markdown(text: str) -> dict[str, Any]:
                 data[key] = parse_scalar(value)
             continue
         if line.startswith("  - ") and current_list_key:
-            data.setdefault(current_list_key, []).append(parse_scalar(line[4:].strip()))
+            existing = data.get(current_list_key)
+            if not isinstance(existing, list):
+                # First indented item under this header (or a key previously
+                # seen as a scalar): start a fresh list rather than appending
+                # to a non-list and crashing.
+                existing = []
+                data[current_list_key] = existing
+            existing.append(parse_scalar(line[4:].strip()))
     return data
 
 
@@ -566,29 +573,42 @@ def require_revert_on_failure_from_aim(aim: dict[str, Any]) -> bool:
 def git_commit_current_state(project_root: Path, message: str) -> dict[str, Any]:
     """Stage and commit the worktree so keep snapshots survive later reverts.
     Uses explicit author env so the commit works even without host git config."""
-    import os as _os
-
     author_env = {
         "GIT_AUTHOR_NAME": "auto-profiling",
         "GIT_AUTHOR_EMAIL": "auto-profiling@localhost",
         "GIT_COMMITTER_NAME": "auto-profiling",
         "GIT_COMMITTER_EMAIL": "auto-profiling@localhost",
     }
-    full_env = {**_os.environ, **author_env}
+    full_env = {**os.environ, **author_env}
 
-    _git = lambda args: subprocess.run(
-        f"git {args}",
-        cwd=str(project_root),
-        shell=True,
-        capture_output=True,
-        text=True,
-        env=full_env,
-    )
+    def _git(args: list[str]) -> subprocess.CompletedProcess:
+        # argv form (no shell) so a message containing quotes/backticks from a
+        # user-supplied --label cannot break quoting or inject shell commands.
+        return subprocess.run(
+            ["git", *args],
+            cwd=str(project_root),
+            capture_output=True,
+            text=True,
+            env=full_env,
+        )
 
-    _git("add -A")
-    completed = _git(f'commit -m "{message}" --allow-empty')
+    add_result = _git(["add", "-A"])
+    if add_result.returncode != 0:
+        return {
+            "command": "git add -A",
+            "cwd": str(project_root),
+            "exit_code": add_result.returncode,
+            "stdout": add_result.stdout,
+            "stderr": add_result.stderr,
+            "started_at": "",
+            "finished_at": "",
+            "shell": {"name": "sh", "path": "/bin/sh"},
+            "timed_out": False,
+            "timeout_seconds": None,
+        }
+    completed = _git(["commit", "-m", message, "--allow-empty"])
     return {
-        "command": f'git commit -m "{message}" --allow-empty',
+        "command": f"git commit -m {message!r} --allow-empty",
         "cwd": str(project_root),
         "exit_code": completed.returncode,
         "stdout": completed.stdout,
@@ -1135,11 +1155,21 @@ def execute_candidate(
         write_json(workspace["best_result_json"], promoted)
         if bool(aim.get("git_required", False)):
             commit_msg = f"auto-profiling: keep {label} ({decision.get('metric_name','metric')}={decision.get('candidate_value','?')})"
-            git_commit_current_state(project_root, commit_msg)
-            commit_rev = git_revision(project_root)
-            if commit_rev:
-                promoted["git_revision"] = commit_rev
-                write_json(workspace["best_result_json"], promoted)
+            commit_result = git_commit_current_state(project_root, commit_msg)
+            # Only record git_revision when the commit actually succeeded.
+            # Recording the prior HEAD would make a later revert restore to a
+            # commit that never captured this kept candidate, silently losing it.
+            if commit_result["exit_code"] == 0:
+                commit_rev = git_revision(project_root)
+                if commit_rev:
+                    promoted["git_revision"] = commit_rev
+                    write_json(workspace["best_result_json"], promoted)
+            else:
+                print(
+                    f"warning: failed to commit kept candidate '{label}' "
+                    f"(exit {commit_result['exit_code']}): {commit_result['stderr'].strip()}",
+                    file=sys.stderr,
+                )
     write_evaluator_report(workspace, reference, record, decision)
     best = load_json(workspace["best_result_json"])
     if decision["keep"]:
