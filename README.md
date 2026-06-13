@@ -78,6 +78,7 @@ python3 auto-profiling/bootstrap_aim.py \
 ```bash
 cd auto-profiling
 python3 runner.py init --aim aim.md
+python3 runner.py doctor --aim aim.md
 python3 runner.py collect-env --aim aim.md
 python3 runner.py baseline --aim aim.md
 python3 runner.py autopilot --aim aim.md --iterations 3
@@ -85,6 +86,17 @@ python3 runner.py status --aim aim.md
 ```
 
 如果安装了 `uv`，可以把 `python3 runner.py` 替换为 `uv run runner.py`。
+
+## 面向用户的预检
+
+在真正启动 benchmark/profile 前，建议先运行：
+
+```bash
+cd auto-profiling
+python3 runner.py doctor --aim aim.md
+```
+
+`doctor` 会生成 `<target_repo>/.auto-profiling/doctor_report.md` 和 `doctor_report.json`，集中检查 aim 完整性、目标仓库、git/revert 安全性、关键命令、指标/正确性合约、输出 artifact 路径和 mutation scope。它默认返回 0，便于在交互流程中阅读报告；如需在 CI 中遇到失败项直接失败，可追加 `--strict`。
 
 ## aim 是稳定用户 API
 

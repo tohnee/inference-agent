@@ -294,6 +294,8 @@ def initialize_workspace(project_root: Path) -> dict[str, str]:
         "skill_route_plan_md": state_dir / "skill_route_plan.md",
         "next_candidate_md": state_dir / "next_candidate.md",
         "next_candidate_json": state_dir / "next_candidate.json",
+        "doctor_report_md": state_dir / "doctor_report.md",
+        "doctor_report_json": state_dir / "doctor_report.json",
     }
 
     template_dir = template_root()
@@ -319,6 +321,8 @@ def initialize_workspace(project_root: Path) -> dict[str, str]:
         "skill_route_plan_md": "# Skill Route Plan\n\n## Current Scenario\n\n- not resolved yet\n",
         "next_candidate_md": "# Next Candidate Plan\n\n- no candidate planned yet\n",
         "next_candidate_json": "{}\n",
+        "doctor_report_md": "# Doctor Report\n\n- no doctor run yet\n",
+        "doctor_report_json": "{}\n",
     }
 
     for key, target in files.items():
@@ -1195,6 +1199,93 @@ def execute_candidate(
     return record, decision, state
 
 
+
+def _command_configured(aim: dict[str, Any], key: str) -> bool:
+    value = aim.get(key)
+    return value is not None and str(value).strip() != ""
+
+
+def build_doctor_report(aim: dict[str, Any], project_root: Path, workspace: dict[str, str]) -> dict[str, Any]:
+    lane = resolve_scenario_lane(aim)
+    artifacts = {
+        key: str(path)
+        for key, path in resolve_output_artifacts(aim, project_root).items()
+    }
+    checks: list[dict[str, Any]] = []
+
+    def add(name: str, status: str, detail: str) -> None:
+        checks.append({"name": name, "status": status, "detail": detail})
+
+    add("aim_schema", "pass", "required aim.md fields are present")
+    add("target_repo", "pass" if project_root.is_dir() else "fail", str(project_root))
+    if aim.get("git_required", False):
+        result = shell_result("git rev-parse --is-inside-work-tree", cwd=project_root)
+        add("git_repo", "pass" if result["exit_code"] == 0 else "fail", result["stdout"].strip() or result["stderr"].strip())
+    else:
+        add("git_repo", "warn", "git_required is false; failed candidates cannot be safely reverted to a known commit")
+
+    for key in ("baseline_run_command", "exactness_check_command", "baseline_profile_command"):
+        add(key, "pass" if _command_configured(aim, key) else "fail", str(aim.get(key) or "not configured"))
+
+    for key, raw_path in artifacts.items():
+        parent = Path(raw_path).parent
+        add(f"{key}_parent", "pass" if parent.exists() else "warn", f"{parent} ({'exists' if parent.exists() else 'will need to be created by the command'})")
+
+    metric_name = str(aim.get("target_metric_name", ""))
+    metric_direction = str(aim.get("target_metric_direction", ""))
+    add("metric_contract", "pass", f"{metric_name} / {metric_direction}")
+
+    exactness_mode = str(aim.get("exactness_mode", "exact-parity"))
+    if exactness_mode == "bounded-tolerance" and not aim.get("override_reason"):
+        add("exactness_policy", "warn", "bounded-tolerance is enabled without override_reason; record why drift is safe")
+    else:
+        add("exactness_policy", "pass", exactness_mode)
+
+    allowed = aim.get("allowed_mutations", [])
+    blocked = aim.get("blocked_by_default", [])
+    add("mutation_scope", "pass" if allowed and blocked else "warn", f"allowed={len(allowed) if isinstance(allowed, list) else 0}, blocked={len(blocked) if isinstance(blocked, list) else 0}")
+
+    recommended_next_steps = []
+    statuses = {item["status"] for item in checks}
+    if "fail" in statuses:
+        recommended_next_steps.append("Fix failed checks before running baseline/autopilot.")
+    if "warn" in statuses:
+        recommended_next_steps.append("Review warnings; they usually affect revert safety or evidence quality.")
+    recommended_next_steps.append("Run baseline only after commands write fresh metric and exactness artifacts.")
+
+    return {
+        "status": "fail" if "fail" in statuses else ("warn" if "warn" in statuses else "pass"),
+        "project_root": str(project_root),
+        "workspace": workspace,
+        "lane": lane,
+        "artifacts": artifacts,
+        "environment": detect_runtime_environment(project_root),
+        "checks": checks,
+        "recommended_next_steps": recommended_next_steps,
+    }
+
+
+def write_doctor_report(workspace: dict[str, str], report: dict[str, Any]) -> None:
+    status_icon = {"pass": "✅", "warn": "⚠️", "fail": "❌"}
+    lines = [
+        "# Doctor Report",
+        "",
+        f"- overall_status: {report['status']}",
+        f"- project_root: {report['project_root']}",
+        f"- scenario: {report['lane']['scenario']}",
+        f"- recommended_skill_route: {report['lane']['recommended_skill_route_text']}",
+        "",
+        "## Checks",
+        "",
+    ]
+    for check in report["checks"]:
+        lines.append(f"- {status_icon.get(check['status'], '•')} {check['name']}: {check['detail']}")
+    lines.extend(["", "## Recommended Next Steps", ""])
+    for step in report["recommended_next_steps"]:
+        lines.append(f"- {step}")
+    Path(workspace["doctor_report_md"]).write_text("\n".join(lines) + "\n", encoding="utf-8")
+    write_json(workspace["doctor_report_json"], report)
+
 def handle_init(args: argparse.Namespace) -> int:
     aim, project_root, workspace = prepare_context(args.aim)
     environment = detect_runtime_environment(project_root)
@@ -1473,6 +1564,14 @@ def handle_autopilot(args: argparse.Namespace) -> int:
     return 0
 
 
+
+def handle_doctor(args: argparse.Namespace) -> int:
+    aim, project_root, workspace = prepare_context(args.aim)
+    report = build_doctor_report(aim, project_root, workspace)
+    write_doctor_report(workspace, report)
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 1 if args.strict and report["status"] == "fail" else 0
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="auto-profiling")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -1480,6 +1579,11 @@ def build_parser() -> argparse.ArgumentParser:
     init_parser = subparsers.add_parser("init")
     init_parser.add_argument("--aim", default="aim.md")
     init_parser.set_defaults(handler=handle_init)
+
+    doctor_parser = subparsers.add_parser("doctor")
+    doctor_parser.add_argument("--aim", default="aim.md")
+    doctor_parser.add_argument("--strict", action="store_true", help="return non-zero when doctor finds failing checks")
+    doctor_parser.set_defaults(handler=handle_doctor)
 
     baseline_parser = subparsers.add_parser("baseline")
     baseline_parser.add_argument("--aim", default="aim.md")

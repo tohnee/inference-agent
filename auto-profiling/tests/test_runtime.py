@@ -25,6 +25,7 @@ from runner import (
     run_required,
     shell_result,
     validate_aim,
+    build_doctor_report,
 )
 from scorer import compare_runs
 
@@ -112,6 +113,8 @@ class WorkspaceInitTests(unittest.TestCase):
                 "next_handoff_md",
                 "next_candidate_md",
                 "next_candidate_json",
+                "doctor_report_md",
+                "doctor_report_json",
             }
             self.assertTrue(expected.issubset(paths.keys()))
             for key in expected:
@@ -502,6 +505,33 @@ class CommandGuardTests(unittest.TestCase):
         self.assertIn("command timed out", str(ctx.exception))
 
 
+
+class DoctorReportTests(unittest.TestCase):
+    def test_doctor_report_surfaces_user_facing_warnings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            workspace = initialize_workspace(repo)
+            aim = {
+                "scenario": "llm-serving",
+                "target_repo_path": str(repo),
+                "git_required": False,
+                "baseline_run_command": "python3 bench.py",
+                "baseline_profile_command": "python3 profile.py",
+                "exactness_check_command": "python3 check.py",
+                "metric_output_path": ".auto-profiling/metric.json",
+                "exactness_output_path": ".auto-profiling/exactness.json",
+                "target_metric_name": "p95_ms",
+                "target_metric_direction": "lower_is_better",
+                "exactness_mode": "exact-parity",
+                "allowed_mutations": ["scheduler tuning"],
+                "blocked_by_default": ["algorithmic behavior change"],
+            }
+            report = build_doctor_report(aim, repo, workspace)
+        self.assertEqual(report["status"], "warn")
+        self.assertTrue(any(check["name"] == "git_repo" and check["status"] == "warn" for check in report["checks"]))
+        self.assertEqual(report["lane"]["target_module"], "llm-serving-opt-skill")
+
 class HarnessCommandTests(unittest.TestCase):
     def test_parser_exposes_loop_evaluate_and_handoff(self):
         parser = build_parser()
@@ -510,6 +540,7 @@ class HarnessCommandTests(unittest.TestCase):
         self.assertIn("evaluate", choices)
         self.assertIn("handoff", choices)
         self.assertIn("collect-env", choices)
+        self.assertIn("doctor", choices)
 
 
 if __name__ == "__main__":
