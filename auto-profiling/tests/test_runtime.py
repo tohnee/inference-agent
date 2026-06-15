@@ -532,6 +532,60 @@ class DoctorReportTests(unittest.TestCase):
         self.assertTrue(any(check["name"] == "git_repo" and check["status"] == "warn" for check in report["checks"]))
         self.assertEqual(report["lane"]["target_module"], "llm-serving-opt-skill")
 
+    def test_doctor_report_requires_reasoning_quality_contract_for_reasoning_scenario(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            workspace = initialize_workspace(repo)
+            aim = {
+                "scenario": "reasoning-task",
+                "target_repo_path": str(repo),
+                "git_required": False,
+                "baseline_run_command": "python3 bench.py",
+                "baseline_profile_command": "python3 profile.py",
+                "exactness_check_command": "python3 check.py",
+                "metric_output_path": ".auto-profiling/metric.json",
+                "exactness_output_path": ".auto-profiling/exactness.json",
+                "target_metric_name": "p95_ms",
+                "target_metric_direction": "lower_is_better",
+                "exactness_mode": "exact-parity",
+                "allowed_mutations": ["prompt packing"],
+                "blocked_by_default": ["answer quality regression"],
+            }
+            report = build_doctor_report(aim, repo, workspace)
+        reasoning_check = next(check for check in report["checks"] if check["name"] == "reasoning_quality_contract")
+        self.assertEqual(reasoning_check["status"], "fail")
+        self.assertEqual(report["lane"]["scenario"], "reasoning-task")
+
+    def test_doctor_report_accepts_complete_reasoning_quality_contract(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            workspace = initialize_workspace(repo)
+            aim = {
+                "scenario": "reasoning-task",
+                "target_repo_path": str(repo),
+                "git_required": False,
+                "baseline_run_command": "python3 bench.py",
+                "baseline_profile_command": "python3 profile.py",
+                "exactness_check_command": "python3 check.py",
+                "metric_output_path": ".auto-profiling/metric.json",
+                "exactness_output_path": ".auto-profiling/exactness.json",
+                "target_metric_name": "p95_ms",
+                "target_metric_direction": "lower_is_better",
+                "exactness_mode": "exact-parity",
+                "reasoning_task_type": "tool_agent",
+                "reasoning_quality_metric": "tool_trace_parity",
+                "reasoning_quality_threshold": "task_success_rate >= baseline",
+                "golden_trace_path": "evals/golden/tool_traces.jsonl",
+                "required_output_properties": ["preserves valid tool-call arguments"],
+                "allowed_mutations": ["tool concurrency"],
+                "blocked_by_default": ["invalid tool calls"],
+            }
+            report = build_doctor_report(aim, repo, workspace)
+        reasoning_check = next(check for check in report["checks"] if check["name"] == "reasoning_quality_contract")
+        self.assertEqual(reasoning_check["status"], "pass")
+
 class HarnessCommandTests(unittest.TestCase):
     def test_parser_exposes_loop_evaluate_and_handoff(self):
         parser = build_parser()

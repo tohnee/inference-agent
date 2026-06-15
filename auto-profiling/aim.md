@@ -67,7 +67,24 @@ Notes:
 - `exact-parity` is the default red line
 - `bounded-tolerance` is only for declared cross-device or precision transitions with equivalent logic and algorithm
 
-## 6. Allowed Mutation Surface
+## 6. Reasoning Quality Contract
+
+- reasoning_task_type: chat_reasoning | code_reasoning | rag_synthesis | tool_agent | long_context | batch_eval
+- reasoning_quality_metric: exact_match | semantic_rubric | judge_score | tool_trace_parity | citation_fidelity
+- reasoning_quality_threshold:
+- golden_dataset_path:
+- golden_trace_path:
+- judge_command:
+- required_output_properties:
+  - preserves final answer correctness
+  - preserves required citations or tool-call arguments when applicable
+
+Notes:
+
+- Fill this section for reasoning-heavy workloads where exact byte-for-byte parity is not enough to describe quality.
+- `doctor` fails `reasoning-task` aims without a complete reasoning-quality contract.
+
+## 7. Allowed Mutation Surface
 
 - allowed_mutations:
   - profiling instrumentation
@@ -83,14 +100,14 @@ Notes:
   - algorithm changes that alter outputs
   - data or model changes
 
-## 7. Experiment Budget
+## 8. Experiment Budget
 
 - max_iterations_per_session:
 - max_runtime_per_experiment:
 - stop_after_consecutive_failures:
 - require_revert_on_failure: true
 
-## 8. Logging
+## 9. Logging
 
 - experiment_log_path:
 - best_result_path:
@@ -100,12 +117,12 @@ Notes:
 - handoff_doc_path:
 - save_failed_runs: true
 
-## 9. Human Override
+## 10. Human Override
 
 - allow_non_zero_drift: false
 - override_reason:
 
-## 10. Notes
+## 11. Notes
 
 - additional_constraints:
 - business_context:
