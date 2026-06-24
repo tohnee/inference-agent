@@ -678,6 +678,57 @@ def apply_workspace_overrides(
     return updated
 
 
+def reasoning_contract_from_aim(aim: dict[str, Any]) -> dict[str, Any]:
+    properties = aim.get("required_output_properties", [])
+    if properties in (None, ""):
+        properties = []
+    if not isinstance(properties, list):
+        properties = [str(properties)]
+    return {
+        "task_type": aim.get("reasoning_task_type"),
+        "quality_metric": aim.get("reasoning_quality_metric"),
+        "quality_threshold": aim.get("reasoning_quality_threshold"),
+        "golden_dataset_path": aim.get("golden_dataset_path"),
+        "golden_trace_path": aim.get("golden_trace_path"),
+        "judge_command": aim.get("judge_command"),
+        "required_output_properties": properties,
+    }
+
+
+def has_reasoning_contract(aim: dict[str, Any]) -> bool:
+    contract = reasoning_contract_from_aim(aim)
+    return any(
+        bool(contract.get(key))
+        for key in (
+            "task_type",
+            "quality_metric",
+            "quality_threshold",
+            "golden_dataset_path",
+            "golden_trace_path",
+            "judge_command",
+        )
+    ) or bool(contract["required_output_properties"])
+
+
+def reasoning_contract_missing_fields(aim: dict[str, Any]) -> list[str]:
+    if not has_reasoning_contract(aim):
+        return []
+    contract = reasoning_contract_from_aim(aim)
+    missing = []
+    for key in ("task_type", "quality_metric", "quality_threshold"):
+        if not contract.get(key):
+            missing.append(key)
+    has_evidence_source = bool(
+        contract.get("golden_dataset_path")
+        or contract.get("golden_trace_path")
+        or contract.get("judge_command")
+    )
+    if not has_evidence_source:
+        missing.append("golden_dataset_path|golden_trace_path|judge_command")
+    if not contract["required_output_properties"]:
+        missing.append("required_output_properties")
+    return missing
+
 def resolve_install_command(aim: dict[str, Any], project_root: Path) -> str | None:
     explicit = aim.get("install_command")
     if explicit and str(explicit).strip().lower() != "auto":
@@ -779,6 +830,7 @@ def plan_next_candidate(
         "suspected_safe_lanes": suspected_safe_lanes,
         "reference_experiment": reference.get("label"),
         "reference_metrics": reference.get("metrics", {}),
+        "reasoning_contract": reasoning_contract_from_aim(aim),
         "artifact_inputs": {
             "metric_output_path": str(metric_path) if metric_path else None,
             "profile_output_path": str(profile_path) if profile_path else None,
@@ -789,7 +841,7 @@ def plan_next_candidate(
             "profile": profile_summary,
             "exactness": exactness_summary,
         },
-        "next_experiment_rule": "Make exactly one bounded change inside allowed_mutations, run exactness first, then keep only with metric evidence.",
+        "next_experiment_rule": "Make exactly one bounded change inside allowed_mutations, run exactness and declared reasoning-quality gates first, then keep only with quality and metric evidence.",
     }
     lines = [
         "# Next Candidate Plan",
@@ -803,6 +855,15 @@ def plan_next_candidate(
         f"- known_bottlenecks: {known_bottlenecks}",
         f"- suspected_safe_lanes: {suspected_safe_lanes}",
         f"- candidate_focus: {lane.get('candidate_focus')}",
+        "",
+        "## Reasoning Quality Gate",
+        "",
+        f"- task_type: {plan['reasoning_contract'].get('task_type') or 'not declared'}",
+        f"- quality_metric: {plan['reasoning_contract'].get('quality_metric') or 'not declared'}",
+        f"- quality_threshold: {plan['reasoning_contract'].get('quality_threshold') or 'not declared'}",
+        f"- judge_command: {plan['reasoning_contract'].get('judge_command') or 'not declared'}",
+        "- required_output_properties:",
+        *(f"  - {item}" for item in plan['reasoning_contract'].get('required_output_properties', [])),
         "",
         "## Rule",
         "",
@@ -941,6 +1002,7 @@ def log_session_artifacts(
 def write_contract_doc(workspace: dict[str, str], aim: dict[str, Any], label: str, phase: str) -> None:
     environment = detect_runtime_environment(Path(workspace["state_dir"]).parent)
     lane = resolve_scenario_lane(aim)
+    reasoning_contract = reasoning_contract_from_aim(aim)
     lines = [
         "# Current Contract",
         "",
@@ -955,6 +1017,9 @@ def write_contract_doc(workspace: dict[str, str], aim: dict[str, Any], label: st
         f"- optimize_for: {aim.get('optimize_for', '')}",
         f"- metric: {aim.get('target_metric_name', '')} ({aim.get('target_metric_direction', '')})",
         f"- exactness_mode: {aim.get('exactness_mode', 'exact-parity')}",
+        f"- reasoning_task_type: {reasoning_contract.get('task_type') or ''}",
+        f"- reasoning_quality_metric: {reasoning_contract.get('quality_metric') or ''}",
+        f"- reasoning_quality_threshold: {reasoning_contract.get('quality_threshold') or ''}",
         f"- shell: {environment['shell']['name']}",
         f"- package_manager: {environment['package_manager']['name']}",
         f"- auto_install_command: {environment['auto_install_command']}",
@@ -1240,6 +1305,25 @@ def build_doctor_report(aim: dict[str, Any], project_root: Path, workspace: dict
         add("exactness_policy", "warn", "bounded-tolerance is enabled without override_reason; record why drift is safe")
     else:
         add("exactness_policy", "pass", exactness_mode)
+
+    reasoning_missing = reasoning_contract_missing_fields(aim)
+    if str(aim.get("scenario", "")) == "reasoning-task" and not has_reasoning_contract(aim):
+        add(
+            "reasoning_quality_contract",
+            "fail",
+            "reasoning-task scenario requires quality metric, threshold, evidence source, and required output properties",
+        )
+    elif reasoning_missing:
+        add("reasoning_quality_contract", "warn", "incomplete reasoning quality contract; missing " + ", ".join(reasoning_missing))
+    elif has_reasoning_contract(aim):
+        contract = reasoning_contract_from_aim(aim)
+        add(
+            "reasoning_quality_contract",
+            "pass",
+            f"{contract.get('task_type')} / {contract.get('quality_metric')} / {contract.get('quality_threshold')}",
+        )
+    else:
+        add("reasoning_quality_contract", "pass", "not declared for this non-reasoning scenario")
 
     allowed = aim.get("allowed_mutations", [])
     blocked = aim.get("blocked_by_default", [])

@@ -92,6 +92,34 @@ class BootstrapAimTests(unittest.TestCase):
             self.assertIn("- target_metric_name: latency_ms", text)
             self.assertIn("memory bandwidth", text)
 
+    def test_generate_reasoning_rag_template(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "aim.reasoning.md"
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--mode",
+                    "reasoning",
+                    "--profile",
+                    "rag",
+                    "--project-name",
+                    "demo-rag",
+                    "--target-repo-path",
+                    "/tmp/rag-agent",
+                    "--output",
+                    str(out),
+                ],
+                check=True,
+                text=True,
+                capture_output=True,
+            )
+            text = out.read_text(encoding="utf-8")
+            self.assertIn("- scenario: reasoning-task", text)
+            self.assertIn("- reasoning_task_type: rag_synthesis", text)
+            self.assertIn("- reasoning_quality_metric: citation_fidelity", text)
+            self.assertIn("preserves required citations", text)
+
 
 if __name__ == "__main__":
     unittest.main()

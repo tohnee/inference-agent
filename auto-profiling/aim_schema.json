@@ -22,7 +22,8 @@
         "e2e-inference",
         "llm-serving",
         "cuda-kernel",
-        "operator-kernel"
+        "operator-kernel",
+        "reasoning-task"
       ]
     },
     "target_repo_path": {
@@ -88,6 +89,51 @@
       "type": "integer",
       "minimum": 1,
       "description": "Number of attempts for required runtime commands."
+    },
+    "reasoning_task_type": {
+      "type": "string",
+      "enum": [
+        "chat_reasoning",
+        "code_reasoning",
+        "rag_synthesis",
+        "tool_agent",
+        "long_context",
+        "batch_eval"
+      ],
+      "description": "Optional user-facing workload type for reasoning-heavy optimization."
+    },
+    "reasoning_quality_metric": {
+      "type": "string",
+      "enum": [
+        "exact_match",
+        "semantic_rubric",
+        "judge_score",
+        "tool_trace_parity",
+        "citation_fidelity"
+      ],
+      "description": "Optional quality gate used to prevent reasoning regressions."
+    },
+    "reasoning_quality_threshold": {
+      "type": "string",
+      "minLength": 1
+    },
+    "golden_dataset_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "golden_trace_path": {
+      "type": "string"
+    },
+    "judge_command": {
+      "type": "string",
+      "minLength": 1
+    },
+    "required_output_properties": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "User-visible behavior that candidates must preserve."
     }
   }
 }

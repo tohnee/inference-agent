@@ -71,6 +71,17 @@ python3 auto-profiling/bootstrap_aim.py \
   --output auto-profiling/aim.md
 ```
 
+推理质量敏感的 RAG / tool-agent / code reasoning 等场景可以生成 reasoning 目标合约：
+
+```bash
+python3 auto-profiling/bootstrap_aim.py \
+  --mode reasoning \
+  --profile rag \
+  --project-name docs-qa-agent \
+  --target-repo-path /path/to/target-repo \
+  --output auto-profiling/aim.md
+```
+
 历史/场景化模板已降级为 examples，位于 `auto-profiling/examples/`。
 
 ### 2. 运行优化闭环
@@ -132,3 +143,4 @@ python3 runner.py doctor --aim aim.md
 - 如需给命令执行设置更严格的上限，可以在 `aim.md` 中添加 `command_timeout_seconds`；该字段优先于 `max_runtime_per_experiment`。
 - 超时命令会以 `exit_code: 124`、`timed_out: true` 写入命令结果，并在 required command 路径抛出明确的 timeout 错误。
 - 最新生产化 review 和后续硬化清单见 `docs/plans/2026-06-03-production-readiness-review.md`。
+- 面向推理类用户任务的 UX / 质量门禁 review 见 `docs/plans/2026-06-15-user-reasoning-task-optimization-review.md`。

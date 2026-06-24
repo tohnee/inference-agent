@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate single-aim contracts for E2E, LLM serving, and CUDA/kernel optimization."""
+"""Generate single-aim contracts for inference optimization scenarios."""
 
 from __future__ import annotations
 
@@ -132,6 +132,114 @@ CUDA_KERNEL_PRESETS = {
     },
 }
 
+REASONING_PRESETS = {
+    "rag": {
+        "scenario": "reasoning-task",
+        "optimize_for": "latency",
+        "target_metric_name": "p95_ms",
+        "target_metric_direction": "lower_is_better",
+        "baseline_run_command": "python3 evals/run_rag_eval.py --output .auto-profiling/metric.json --quality-output .auto-profiling/reasoning_quality.json",
+        "baseline_profile_command": "python3 evals/profile_rag.py --trace --output .auto-profiling/profile.json",
+        "reasoning_task_type": "rag_synthesis",
+        "reasoning_quality_metric": "citation_fidelity",
+        "reasoning_quality_threshold": "no citation-support regression and rubric_score >= baseline",
+        "golden_dataset_path": "evals/golden/rag_questions.jsonl",
+        "golden_trace_path": "",
+        "judge_command": "python3 evals/check_rag_quality.py --output .auto-profiling/reasoning_quality.json",
+        "required_output_properties": [
+            "preserves final answer correctness",
+            "preserves required citations",
+            "preserves source support for grounded claims",
+        ],
+        "known_bottlenecks": "retrieval fanout, context packing, prefill latency, synthesis latency",
+        "suspected_safe_lanes": "retrieval batching, context deduplication, prefix cache, prompt packing gated by citation checks",
+    },
+    "tool-agent": {
+        "scenario": "reasoning-task",
+        "optimize_for": "latency",
+        "target_metric_name": "p95_ms",
+        "target_metric_direction": "lower_is_better",
+        "baseline_run_command": "python3 evals/run_agent_eval.py --output .auto-profiling/metric.json --quality-output .auto-profiling/reasoning_quality.json",
+        "baseline_profile_command": "python3 evals/profile_agent.py --trace --output .auto-profiling/profile.json",
+        "reasoning_task_type": "tool_agent",
+        "reasoning_quality_metric": "tool_trace_parity",
+        "reasoning_quality_threshold": "required tool calls valid and task_success_rate >= baseline",
+        "golden_dataset_path": "evals/golden/agent_tasks.jsonl",
+        "golden_trace_path": "evals/golden/tool_traces.jsonl",
+        "judge_command": "python3 evals/check_agent_quality.py --output .auto-profiling/reasoning_quality.json",
+        "required_output_properties": [
+            "preserves final answer correctness",
+            "preserves valid tool-call arguments",
+            "preserves required tool ordering constraints",
+        ],
+        "known_bottlenecks": "tool latency, retry loops, planner serialization, request orchestration",
+        "suspected_safe_lanes": "tool concurrency, scheduler tuning, trace caching, retry budget tightening gated by trace validity",
+    },
+    "code-reasoning": {
+        "scenario": "reasoning-task",
+        "optimize_for": "cost_per_request",
+        "target_metric_name": "tokens_per_task",
+        "target_metric_direction": "lower_is_better",
+        "baseline_run_command": "python3 evals/run_code_eval.py --output .auto-profiling/metric.json --quality-output .auto-profiling/reasoning_quality.json",
+        "baseline_profile_command": "python3 evals/profile_code_agent.py --trace --output .auto-profiling/profile.json",
+        "reasoning_task_type": "code_reasoning",
+        "reasoning_quality_metric": "semantic_rubric",
+        "reasoning_quality_threshold": "tests_passed >= baseline and rubric_score >= baseline",
+        "golden_dataset_path": "evals/golden/code_tasks.jsonl",
+        "golden_trace_path": "",
+        "judge_command": "python3 evals/check_code_quality.py --output .auto-profiling/reasoning_quality.json",
+        "required_output_properties": [
+            "preserves test pass rate",
+            "preserves edit correctness",
+            "preserves required explanation constraints",
+        ],
+        "known_bottlenecks": "long prompts, repeated repository context, slow test loop, excessive retries",
+        "suspected_safe_lanes": "context cache, test selection, prompt packing, batching gated by pass-rate checks",
+    },
+    "long-context": {
+        "scenario": "reasoning-task",
+        "optimize_for": "memory",
+        "target_metric_name": "peak_memory_mb",
+        "target_metric_direction": "lower_is_better",
+        "baseline_run_command": "python3 evals/run_long_context_eval.py --output .auto-profiling/metric.json --quality-output .auto-profiling/reasoning_quality.json",
+        "baseline_profile_command": "python3 evals/profile_long_context.py --trace --output .auto-profiling/profile.json",
+        "reasoning_task_type": "long_context",
+        "reasoning_quality_metric": "semantic_rubric",
+        "reasoning_quality_threshold": "answer_completeness >= baseline and no critical fact loss",
+        "golden_dataset_path": "evals/golden/long_context_tasks.jsonl",
+        "golden_trace_path": "",
+        "judge_command": "python3 evals/check_long_context_quality.py --output .auto-profiling/reasoning_quality.json",
+        "required_output_properties": [
+            "preserves final answer correctness",
+            "preserves required evidence coverage",
+            "preserves long-context recall requirements",
+        ],
+        "known_bottlenecks": "prefill latency, context-window pressure, memory footprint",
+        "suspected_safe_lanes": "prefix cache, context compaction, chunking, attention backend tuning gated by completeness checks",
+    },
+    "chat-reasoning": {
+        "scenario": "reasoning-task",
+        "optimize_for": "latency",
+        "target_metric_name": "p95_ms",
+        "target_metric_direction": "lower_is_better",
+        "baseline_run_command": "python3 evals/run_chat_eval.py --output .auto-profiling/metric.json --quality-output .auto-profiling/reasoning_quality.json",
+        "baseline_profile_command": "python3 evals/profile_chat.py --trace --output .auto-profiling/profile.json",
+        "reasoning_task_type": "chat_reasoning",
+        "reasoning_quality_metric": "judge_score",
+        "reasoning_quality_threshold": "judge_score >= baseline and no refusal/instruction-following regression",
+        "golden_dataset_path": "evals/golden/chat_tasks.jsonl",
+        "golden_trace_path": "",
+        "judge_command": "python3 evals/check_chat_quality.py --output .auto-profiling/reasoning_quality.json",
+        "required_output_properties": [
+            "preserves final answer correctness",
+            "preserves instruction-following behavior",
+            "preserves refusal and safety-policy behavior",
+        ],
+        "known_bottlenecks": "decode latency, prompt length, repeated system/context tokens",
+        "suspected_safe_lanes": "prompt packing, prefix cache, batching, serving scheduler tuning gated by rubric checks",
+    },
+}
+
 
 def render_template(scenario: str, project_name: str, repo_path: str, preset: dict[str, str]) -> str:
     return "\n".join(
@@ -184,7 +292,18 @@ def render_template(scenario: str, project_name: str, repo_path: str, preset: di
             "- cache_semantics_requirements: exact cache behavior",
             "- request_isolation_requirements: exact request isolation",
             "",
-            "## 6. Allowed Mutation Surface",
+            "## 6. Reasoning Quality Contract",
+            "",
+            f"- reasoning_task_type: {preset.get('reasoning_task_type', '')}",
+            f"- reasoning_quality_metric: {preset.get('reasoning_quality_metric', '')}",
+            f"- reasoning_quality_threshold: {preset.get('reasoning_quality_threshold', '')}",
+            f"- golden_dataset_path: {preset.get('golden_dataset_path', '')}",
+            f"- golden_trace_path: {preset.get('golden_trace_path', '')}",
+            f"- judge_command: {preset.get('judge_command', '')}",
+            "- required_output_properties:",
+            *[f"  - {item}" for item in preset.get('required_output_properties', [])],
+            "",
+            "## 7. Allowed Mutation Surface",
             "",
             "- allowed_mutations:",
             "  - runtime and scheduler tuning",
@@ -194,14 +313,14 @@ def render_template(scenario: str, project_name: str, repo_path: str, preset: di
             "  - algorithmic behavior change",
             "  - unsafe precision drift",
             "",
-            "## 7. Experiment Budget",
+            "## 8. Experiment Budget",
             "",
             "- max_iterations_per_session: 8",
             "- max_runtime_per_experiment: 1800",
             "- stop_after_consecutive_failures: 3",
             "- require_revert_on_failure: true",
             "",
-            "## 8. Logging",
+            "## 9. Logging",
             "",
             "- experiment_log_path: ",
             "- best_result_path: ",
@@ -209,12 +328,12 @@ def render_template(scenario: str, project_name: str, repo_path: str, preset: di
             "- worklog_doc_path: ",
             "- save_failed_runs: true",
             "",
-            "## 9. Human Override",
+            "## 10. Human Override",
             "",
             "- allow_non_zero_drift: false",
             "- override_reason: ",
             "",
-            "## 10. Notes",
+            "## 11. Notes",
             "",
             "- additional_constraints: distributed serving and ai-infra constraints must be recorded",
             "- business_context: ",
@@ -227,7 +346,7 @@ def render_template(scenario: str, project_name: str, repo_path: str, preset: di
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Generate scenario-specific aim template")
-    parser.add_argument("--mode", choices=["e2e", "llm-serving", "cuda-kernel"], required=True)
+    parser.add_argument("--mode", choices=["e2e", "llm-serving", "cuda-kernel", "reasoning"], required=True)
     parser.add_argument("--profile", required=True, help="E2E model family, serving backend, or CUDA/kernel backend")
     parser.add_argument("--project-name", required=True)
     parser.add_argument("--target-repo-path", required=True)
@@ -247,11 +366,16 @@ def main() -> int:
             raise SystemExit(f"unsupported llm-serving profile: {args.profile}")
         preset = {**LLM_BACKEND_PRESETS[args.profile], "optimize_for": "latency"}
         scenario = "llm-serving"
-    else:
+    elif args.mode == "cuda-kernel":
         if args.profile not in CUDA_KERNEL_PRESETS:
             raise SystemExit(f"unsupported cuda-kernel profile: {args.profile}")
         preset = CUDA_KERNEL_PRESETS[args.profile]
         scenario = "operator-kernel" if args.profile == "operator" else "cuda-kernel"
+    else:
+        if args.profile not in REASONING_PRESETS:
+            raise SystemExit(f"unsupported reasoning profile: {args.profile}")
+        preset = REASONING_PRESETS[args.profile]
+        scenario = preset["scenario"]
 
     content = render_template(
         scenario=scenario,

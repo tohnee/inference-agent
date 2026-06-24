@@ -48,6 +48,17 @@ python3 auto-profiling/bootstrap_aim.py \
   --output auto-profiling/aim.md
 ```
 
+Reasoning-quality-sensitive RAG, tool-agent, code-reasoning, long-context, and chat workloads can use reasoning presets:
+
+```bash
+python3 auto-profiling/bootstrap_aim.py \
+  --mode reasoning \
+  --profile rag \
+  --project-name docs-qa-agent \
+  --target-repo-path /path/to/target-repo \
+  --output auto-profiling/aim.md
+```
+
 Run the loop:
 
 ```bash
@@ -87,3 +98,4 @@ python3 runner.py doctor --aim aim.md
 - Add `command_timeout_seconds` to `aim.md` when a stricter per-command timeout is needed; it takes precedence over `max_runtime_per_experiment`.
 - Timed-out commands are reported with `exit_code: 124`, `timed_out: true`, and a timeout-specific required-command error.
 - See `docs/plans/2026-06-03-production-readiness-review.md` for the current hardening review and follow-up checklist.
+- See `docs/plans/2026-06-15-user-reasoning-task-optimization-review.md` for the user-perspective review of reasoning-task optimization UX and quality gates.
